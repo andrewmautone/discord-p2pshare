@@ -1,0 +1,52 @@
+.p2ps-overlay {
+    position: fixed;
+    z-index: 3000;
+    background: var(--background-tertiary, #202225);
+    border-radius: 8px;
+    box-shadow: var(--elevation-high, 0 8px 16px rgb(0 0 0 / 24%));
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    resize: both;
+    min-width: 240px;
+    min-height: 160px;
+}
+
+.p2ps-overlay-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    cursor: move;
+    background: var(--background-secondary-alt, #292b2f);
+    color: var(--header-primary, #fff);
+    font-size: 13px;
+    user-select: none;
+}
+
+.p2ps-overlay-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.p2ps-overlay-bar button {
+    background: none;
+    border: none;
+    color: var(--interactive-normal, #b9bbbe);
+    cursor: pointer;
+    padding: 2px 6px;
+    font-size: 13px;
+}
+
+.p2ps-overlay-bar button:hover {
+    color: var(--interactive-hover, #fff);
+}
+
+.p2ps-overlay video {
+    flex: 1;
+    width: 100%;
+    background: #000;
+    object-fit: contain;
+}
