@@ -4,10 +4,15 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { ApplicationCommandInputType, sendBotMessage } from "@api/Commands";
+import { addMessageAccessory, removeMessageAccessory } from "@api/MessageAccessories";
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
 
+import { isBroadcasting, startBroadcast, stopBroadcast } from "./broadcast";
 import { DEFAULT_BUDGET_MBPS } from "./constants";
+import { BeaconAccessory } from "./ui/BeaconAccessory";
+import { initWatcher } from "./watch";
 
 export const settings = definePluginSettings({
     uploadBudgetMbps: {
@@ -22,9 +27,38 @@ export const settings = definePluginSettings({
     overlayWidth: { type: OptionType.NUMBER, description: "", default: 640, hidden: true }
 });
 
+let cleanupWatcher: (() => void) | null = null;
+
 export default definePlugin({
     name: "P2PShare",
     description: "Compartilhamento de tela ponto-a-ponto, sem passar pela infra de vídeo do Discord",
     authors: [{ name: "Andrew", id: 0n }],
-    settings
+    settings,
+
+    commands: [{
+        name: "p2pshare",
+        description: "Liga ou desliga a transmissão de tela P2P no canal de voz atual",
+        inputType: ApplicationCommandInputType.BUILT_IN,
+        execute: (_args, ctx) => {
+            if (isBroadcasting()) {
+                void stopBroadcast();
+                sendBotMessage(ctx.channel.id, { content: "Encerrando a transmissão P2P." });
+            } else {
+                void startBroadcast();
+                sendBotMessage(ctx.channel.id, { content: "Iniciando a transmissão P2P…" });
+            }
+        }
+    }],
+
+    start() {
+        cleanupWatcher = initWatcher();
+        addMessageAccessory("p2pshare", props => <BeaconAccessory message={props.message} />);
+    },
+
+    stop() {
+        removeMessageAccessory("p2pshare");
+        void stopBroadcast();
+        cleanupWatcher?.();
+        cleanupWatcher = null;
+    }
 });

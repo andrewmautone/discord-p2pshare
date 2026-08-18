@@ -6,7 +6,7 @@
 
 import { showToast, Toasts } from "@webpack/common";
 
-import { captureScreen, CaptureError } from "./capture";
+import { CaptureError, captureScreen } from "./capture";
 import { newSessionId } from "./codec";
 import { getCurrentUsername, getVoiceChannelId } from "./discord/api";
 import { settings } from "./index";
