@@ -1,0 +1,35 @@
+/*
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+export const PROTOCOL_VERSION = 1;
+
+export const PLUGIN_URL = "https://github.com/andrewmautone/vencord-p2pshare";
+
+export const ICE_SERVERS: RTCIceServer[] = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun.cloudflare.com:3478" }
+];
+
+/**
+ * Alfabeto zero-width: 4 code points invisíveis, 2 bits por caractere.
+ * ZWSP, ZWNJ, ZWJ e WORD JOINER.
+ *
+ * Declarados por code point de propósito — literais colados aqui seriam
+ * invisíveis no editor e impossíveis de revisar num diff.
+ */
+export const ZW_CODEPOINTS = [0x200b, 0x200c, 0x200d, 0x2060] as const;
+export const ZW_DIGITS: readonly string[] = ZW_CODEPOINTS.map(c => String.fromCodePoint(c));
+
+/** INVISIBLE TIMES — delimita o payload dentro do texto visível. */
+export const ZW_DELIM = String.fromCodePoint(0x2062);
+
+export const MIN_BITRATE = 800_000;
+export const MAX_BITRATE = 8_000_000;
+export const DEFAULT_BUDGET_MBPS = 15;
+
+export const ICE_GATHER_TIMEOUT_MS = 4_000;
+export const PEER_CONNECT_TIMEOUT_MS = 30_000;
+export const HANDSHAKE_TTL_MS = 20_000;
