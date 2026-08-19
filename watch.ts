@@ -49,7 +49,8 @@ export async function startWatching(beacon: Beacon): Promise<void> {
             beacon.sessionId,
             stream,
             beacon.broadcasterName,
-            () => stopWatching(beacon.sessionId)
+            () => stopWatching(beacon.sessionId),
+            { closeLabel: `Parar de assistir ${beacon.broadcasterName}` }
         );
     };
 
@@ -67,10 +68,27 @@ export async function startWatching(beacon: Beacon): Promise<void> {
     }
 }
 
+/**
+ * Para de assistir. Fecha a conexão de verdade — o emissor vê você sair da
+ * lista e o vídeo para de consumir banda dos dois lados.
+ *
+ * Se a transmissão continua no ar, o aviso volta a aparecer: sem isso, sair
+ * uma vez significaria não conseguir voltar até o emissor recomeçar tudo.
+ */
 export function stopWatching(sessionId: string): void {
     watching.get(sessionId)?.close();
     watching.delete(sessionId);
     host.unmountOverlay(sessionId);
+
+    for (const beacon of beacons.values()) {
+        if (beacon.sessionId !== sessionId) continue;
+
+        host.announceBeacon(
+            { sessionId: beacon.sessionId, broadcasterName: beacon.broadcasterName },
+            () => { void startWatching(beacon); }
+        );
+        return;
+    }
 }
 
 /** Assina o chat para descobrir beacons e receber answers. Devolve a limpeza. */
@@ -112,10 +130,15 @@ export function initWatcher(): () => void {
 
     return () => {
         unsubscribe();
-        for (const sessionId of [...watching.keys()]) stopWatching(sessionId);
-        host.unmountAllOverlays();
+
+        // Esvaziar os beacons ANTES de parar de assistir: stopWatching
+        // re-anuncia transmissões ainda no ar, e no desligamento do plugin
+        // isso deixaria avisos órfãos na tela.
         for (const beacon of beacons.values()) host.revokeBeacon(beacon.sessionId);
         beacons.clear();
+
+        for (const sessionId of [...watching.keys()]) stopWatching(sessionId);
+        host.unmountAllOverlays();
         notifyBeacons();
     };
 }

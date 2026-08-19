@@ -89,7 +89,14 @@ export async function startBroadcast(): Promise<void> {
     const peers = new BroadcastPeers(stream, transport, {
         budgetMbps: host.getBudgetMbps()
     });
-    peers.onCountChange = notify;
+
+    peers.onCountChange = () => {
+        host.setOverlayViewers(
+            selfPreviewKey(sessionId),
+            peers.viewerIds.map(id => host.getUsername(id))
+        );
+        notify();
+    };
 
     // Se o usuário parar a captura pelo diálogo nativo do Chromium, encerra tudo.
     stream.getVideoTracks()[0]?.addEventListener("ended", () => { void stopBroadcast(); });
@@ -124,7 +131,7 @@ export async function startBroadcast(): Promise<void> {
         stream,
         "Sua tela",
         () => host.unmountOverlay(selfPreviewKey(sessionId)),
-        { muted: true }
+        { muted: true, closeLabel: "Fechar a prévia (não encerra a transmissão)" }
     );
 
     notify();

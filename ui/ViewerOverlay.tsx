@@ -15,9 +15,11 @@ interface OverlayProps {
     title: string;
     onClose: () => void;
     muted: boolean;
+    closeLabel?: string;
+    viewers: string[];
 }
 
-function ViewerOverlay({ stream, title, onClose, muted }: OverlayProps) {
+function ViewerOverlay({ stream, title, onClose, muted, closeLabel, viewers }: OverlayProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const boxRef = useRef<HTMLDivElement>(null);
     const [pos, setPos] = useState({ x: settings.store.overlayX, y: settings.store.overlayY });
@@ -89,23 +91,40 @@ function ViewerOverlay({ stream, title, onClose, muted }: OverlayProps) {
                     />
                 )}
                 <button onClick={() => void videoRef.current?.requestFullscreen()} title="Tela cheia">⛶</button>
-                <button onClick={onClose} title="Fechar">✕</button>
+                <button onClick={onClose} title={closeLabel ?? "Fechar"}>✕</button>
             </div>
             {/* Sem `controls`: para um stream ao vivo o player nativo desenha
                 uma linha do tempo, e a transmissao parece video gravado. */}
             <video ref={videoRef} autoPlay playsInline />
+            {viewers.length > 0 && (
+                <div className="p2ps-viewers">
+                    <span className="p2ps-viewers-label">
+                        {viewers.length === 1 ? "Assistindo" : `Assistindo (${viewers.length})`}
+                    </span>
+                    {viewers.map(name => (
+                        <span className="p2ps-viewer-chip" key={name}>{name}</span>
+                    ))}
+                </div>
+            )}
         </div>
     );
 }
 
-const mounted = new Map<string, { root: ReturnType<typeof createRoot>; container: HTMLElement; }>();
+interface MountedOverlay {
+    root: ReturnType<typeof createRoot>;
+    container: HTMLElement;
+    viewers: string[];
+    render: () => void;
+}
+
+const mounted = new Map<string, MountedOverlay>();
 
 export function mountOverlay(
     sessionId: string,
     stream: MediaStream,
     title: string,
     onClose: () => void,
-    opts: { muted?: boolean; } = {}
+    opts: { muted?: boolean; closeLabel?: string; } = {}
 ): void {
     unmountOverlay(sessionId);
 
@@ -114,16 +133,37 @@ export function mountOverlay(
     document.body.appendChild(container);
 
     const root = createRoot(container);
-    root.render(
-        <ViewerOverlay
-            stream={stream}
-            title={title}
-            onClose={onClose}
-            muted={opts.muted === true}
-        />
-    );
 
-    mounted.set(sessionId, { root, container });
+    const entry: MountedOverlay = {
+        root,
+        container,
+        viewers: [],
+        render: () => root.render(
+            <ViewerOverlay
+                stream={stream}
+                title={title}
+                onClose={onClose}
+                muted={opts.muted === true}
+                closeLabel={opts.closeLabel}
+                viewers={entry.viewers}
+            />
+        )
+    };
+
+    mounted.set(sessionId, entry);
+    entry.render();
+}
+
+/**
+ * Lista quem está assistindo, na janela de prévia do emissor.
+ * Sem espectadores a faixa some: "0 assistindo" não diz nada.
+ */
+export function setOverlayViewers(sessionId: string, names: string[]): void {
+    const entry = mounted.get(sessionId);
+    if (!entry) return;
+
+    entry.viewers = names;
+    entry.render();
 }
 
 export function unmountOverlay(sessionId: string): void {

@@ -84,6 +84,21 @@ export function getCurrentUsername(): string {
     return UserStore().getCurrentUser().username;
 }
 
+/**
+ * Nome de exibição de um usuário qualquer.
+ *
+ * Quem acabou de entrar no canal pode ainda não estar no store — nesse caso
+ * mostrar o id cru é melhor que quebrar a lista inteira.
+ */
+export function getUsername(userId: string): string {
+    try {
+        const user = UserStore().getUser(userId);
+        return user?.globalName || user?.username || userId;
+    } catch {
+        return userId;
+    }
+}
+
 export function getVoiceChannelId(): string | null {
     return SelectedChannelStore().getVoiceChannelId() ?? null;
 }

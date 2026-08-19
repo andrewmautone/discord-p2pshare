@@ -36,12 +36,16 @@ export interface OverlayOptions {
      * o áudio do sistema volta pelos alto-falantes e microfona.
      */
     muted?: boolean;
+    /** Texto do botão de fechar. O padrão não diz o que realmente acontece. */
+    closeLabel?: string;
 }
 
 export interface Host {
     // --- identidade e contexto ---
     getCurrentUserId(): string;
     getCurrentUsername(): string;
+    /** Nome de exibição de um usuário. Cai no próprio id se não conhecer. */
+    getUsername(userId: string): string;
     /** Canal de voz em que o usuário está, ou null. */
     getVoiceChannelId(): string | null;
 
@@ -75,6 +79,12 @@ export interface Host {
     ): void;
     unmountOverlay(sessionId: string): void;
     unmountAllOverlays(): void;
+
+    /**
+     * Lista quem está assistindo, dentro da janela de prévia do emissor.
+     * Lista vazia significa ninguém conectado ainda.
+     */
+    setOverlayViewers(sessionId: string, names: string[]): void;
 
     /**
      * Avisa que existe uma transmissão para assistir.

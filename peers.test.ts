@@ -128,6 +128,24 @@ describe("BroadcastPeers", () => {
         assert.equal(created[2].senders[0].params.encodings[0].maxBitrate, 5_000_000);
     });
 
+    it("expoe quem esta conectado, nao so quantos", async () => {
+        const { transport } = recordingTransport();
+        const peers = new BroadcastPeers(fakeStream, transport, {
+            budgetMbps: 15,
+            createPeer: () => new FakePeer() as any
+        });
+
+        await peers.handleOffer("viewer1", "SDP");
+        await peers.handleOffer("viewer2", "SDP");
+        assert.deepEqual(peers.viewerIds.sort(), ["viewer1", "viewer2"]);
+
+        peers.removePeer("viewer1");
+        assert.deepEqual(peers.viewerIds, ["viewer2"]);
+
+        peers.closeAll();
+        assert.deepEqual(peers.viewerIds, []);
+    });
+
     it("avisa quando a contagem muda", async () => {
         const { transport } = recordingTransport();
         const counts: number[] = [];

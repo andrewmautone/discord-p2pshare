@@ -31,6 +31,7 @@ const TOAST_TYPE: Record<ToastKind, string> = {
 export const host: Host = {
     getCurrentUserId: api.getCurrentUserId,
     getCurrentUsername: api.getCurrentUsername,
+    getUsername: api.getUsername,
     getVoiceChannelId: api.getVoiceChannelId,
 
     sendMessage: api.sendMessage,
@@ -48,6 +49,7 @@ export const host: Host = {
     mountOverlay: ui.mountOverlay,
     unmountOverlay: ui.unmountOverlay,
     unmountAllOverlays: ui.unmountAllOverlays,
+    setOverlayViewers: ui.setOverlayViewers,
 
     announceBeacon: ui.announceBeacon,
     revokeBeacon: ui.revokeBeacon

@@ -185,6 +185,29 @@ const CSS = `
 @keyframes p2ps-pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
 @media (prefers-reduced-motion: reduce) { .p2ps-live-dot { animation: none } }
 .p2ps-vol { width: 64px; accent-color: var(--brand-experiment, #5865f2); }
+.p2ps-viewers {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 9px;
+    background: var(--background-secondary-alt, #292b2f);
+    border-top: 1px solid var(--background-tertiary, #202225);
+    font-size: 12px;
+}
+.p2ps-viewers-label {
+    color: var(--text-muted, #72767d);
+    text-transform: uppercase;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .06em;
+}
+.p2ps-viewer-chip {
+    background: var(--background-tertiary, #202225);
+    color: var(--header-primary, #fff);
+    border-radius: 10px;
+    padding: 2px 9px;
+}
 .p2ps-overlay-bar button:disabled { opacity: .4; cursor: default; }
 .p2ps-overlay-bar button {
     background: none;
@@ -431,7 +454,7 @@ export function mountOverlay(
     stream: MediaStream,
     title: string,
     onClose: () => void,
-    opts: { muted?: boolean; } = {}
+    opts: { muted?: boolean; closeLabel?: string; } = {}
 ): void {
     unmountOverlay(sessionId);
 
@@ -451,9 +474,10 @@ export function mountOverlay(
             <button data-act="mute" title="Silenciar"></button>
             <input class="p2ps-vol" type="range" min="0" max="100" value="100" title="Volume">
             <button data-act="full" title="Tela cheia">⛶</button>
-            <button data-act="close" title="Fechar">✕</button>
+            <button data-act="close">✕</button>
         </div>
-        <video autoplay playsinline></video>`;
+        <video autoplay playsinline></video>
+        <div class="p2ps-viewers" hidden></div>`;
 
     (el.querySelector(".p2ps-overlay-title") as HTMLElement).textContent = title;
 
@@ -490,12 +514,49 @@ export function mountOverlay(
     el.querySelector('[data-act="full"]')!.addEventListener("click", () => {
         void video.requestFullscreen();
     });
-    el.querySelector('[data-act="close"]')!.addEventListener("click", onClose);
+    const closeBtn = el.querySelector('[data-act="close"]') as HTMLButtonElement;
+    closeBtn.title = opts.closeLabel ?? "Fechar";
+    closeBtn.addEventListener("click", onClose);
 
     makeDraggable(el, el.querySelector(".p2ps-overlay-bar") as HTMLElement);
 
     document.body.appendChild(el);
     overlays.set(sessionId, el);
+}
+
+/**
+ * Preenche a faixa de espectadores da janela do emissor.
+ *
+ * Fica escondida ate' existir alguem: uma faixa vazia so' rouba espaco da
+ * previa, e "0 assistindo" nao diz nada que o silencio ja nao diga.
+ */
+export function setOverlayViewers(sessionId: string, names: string[]): void {
+    const el = overlays.get(sessionId);
+    if (!el) return;
+
+    const bar = el.querySelector(".p2ps-viewers") as HTMLElement | null;
+    if (!bar) return;
+
+    if (!names.length) {
+        bar.hidden = true;
+        bar.textContent = "";
+        return;
+    }
+
+    bar.hidden = false;
+    bar.textContent = "";
+
+    const label = document.createElement("span");
+    label.className = "p2ps-viewers-label";
+    label.textContent = names.length === 1 ? "Assistindo" : `Assistindo (${names.length})`;
+    bar.appendChild(label);
+
+    for (const name of names) {
+        const chip = document.createElement("span");
+        chip.className = "p2ps-viewer-chip";
+        chip.textContent = name;
+        bar.appendChild(chip);
+    }
 }
 
 export function unmountOverlay(sessionId: string): void {

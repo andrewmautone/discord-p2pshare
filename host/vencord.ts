@@ -11,6 +11,7 @@ import {
     fetchAttachmentText,
     getCurrentUserId,
     getCurrentUsername,
+    getUsername,
     getVoiceChannelId,
     sendMessage,
     uploadTextAttachment
@@ -18,7 +19,7 @@ import {
 import { onMessageCreate, onMessageDelete } from "../discord/events";
 import { settings } from "../settings";
 import { openSourcePicker } from "../ui/SourcePicker";
-import { mountOverlay, unmountAllOverlays, unmountOverlay } from "../ui/ViewerOverlay";
+import { mountOverlay, setOverlayViewers, unmountAllOverlays, unmountOverlay } from "../ui/ViewerOverlay";
 import type { Host, ToastKind } from "./types";
 
 const TOAST_TYPE: Record<ToastKind, string> = {
@@ -30,6 +31,7 @@ const TOAST_TYPE: Record<ToastKind, string> = {
 export const host: Host = {
     getCurrentUserId,
     getCurrentUsername,
+    getUsername,
     getVoiceChannelId,
 
     sendMessage,
@@ -47,6 +49,7 @@ export const host: Host = {
     mountOverlay,
     unmountOverlay,
     unmountAllOverlays,
+    setOverlayViewers,
 
     // O botão "Assistir" é renderizado direto na mensagem pelo accessory.
     announceBeacon: () => { },

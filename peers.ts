@@ -65,6 +65,11 @@ export class BroadcastPeers {
         return this.peers.size;
     }
 
+    /** Ids de quem está conectado agora, para o emissor saber quem é. */
+    get viewerIds(): string[] {
+        return [...this.peers.keys()];
+    }
+
     async handleOffer(fromUserId: string, sdp: string): Promise<void> {
         // Offer repetida significa que o viewer reconectou: descarta a antiga.
         this.peers.get(fromUserId)?.close();
