@@ -8,6 +8,18 @@ export const PROTOCOL_VERSION = 1;
 
 export const PLUGIN_URL = "https://github.com/andrewmautone/vencord-p2pshare";
 
+/** Versão publicada. O build do BetterDiscord escreve isto no cabeçalho. */
+export const PLUGIN_VERSION = "1.0.0";
+
+/**
+ * Onde o plugin procura por versões novas.
+ *
+ * Aponta para o arquivo cru publicado — um raw do GitHub ou de um Gist serve.
+ * String vazia desliga a checagem por completo.
+ */
+export const UPDATE_URL =
+    "https://raw.githubusercontent.com/andrewmautone/vencord-p2pshare/main/release/P2PShare.plugin.js";
+
 export const ICE_SERVERS: RTCIceServer[] = [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun.cloudflare.com:3478" }

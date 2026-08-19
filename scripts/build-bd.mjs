@@ -16,7 +16,12 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = resolve(root, "release");
 const outFile = resolve(outDir, "P2PShare.plugin.js");
 
-const pkgVersion = "1.0.0";
+// Fonte única da versão: constants.ts. Duas cópias divergiriam, e o updater
+// compara justamente esse número.
+const constantsSrc = await readFile(resolve(root, "constants.ts"), "utf8");
+const versionMatch = constantsSrc.match(/PLUGIN_VERSION\s*=\s*"([^"]+)"/);
+if (!versionMatch) throw new Error("não achei PLUGIN_VERSION em constants.ts");
+const pkgVersion = versionMatch[1];
 
 const META = `/**
  * @name P2PShare

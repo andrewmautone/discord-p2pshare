@@ -7,6 +7,7 @@
 import { getBroadcastState, onBroadcastStateChange, startBroadcast, stopBroadcast } from "./broadcast";
 import { DEFAULT_BUDGET_MBPS } from "./constants";
 import { loadSetting, saveSetting, ui } from "./host/bd";
+import { checkForUpdate } from "./host/bd/updater";
 import { initWatcher } from "./watch";
 
 declare const BdApi: any;
@@ -43,6 +44,9 @@ export default class P2PShare {
         });
 
         this.cleanupState = onBroadcastStateChange(ui.updateLauncher);
+
+        // Não bloqueia o start: se o host estiver fora do ar, o plugin sobe igual.
+        void checkForUpdate();
     }
 
     stop(): void {
