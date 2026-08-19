@@ -313,6 +313,16 @@ function onMessageDelete(handler) {
   return () => FluxDispatcher().unsubscribe("MESSAGE_DELETE", listener);
 }
 
+// host/bd/settings.ts
+var STORE = "P2PShare";
+function loadSetting(key, fallback) {
+  const value = BdApi.Data.load(STORE, key);
+  return value === void 0 || value === null ? fallback : value;
+}
+function saveSetting(key, value) {
+  BdApi.Data.save(STORE, key, value);
+}
+
 // host/bd/ui.ts
 var ui_exports = {};
 __export(ui_exports, {
@@ -827,14 +837,6 @@ function revokeBeacon(sessionId) {
 }
 
 // host/bd/index.ts
-var STORE = "P2PShare";
-function loadSetting(key, fallback) {
-  const value = BdApi.Data.load(STORE, key);
-  return value === void 0 || value === null ? fallback : value;
-}
-function saveSetting(key, value) {
-  BdApi.Data.save(STORE, key, value);
-}
 var TOAST_TYPE = {
   info: "info",
   success: "success",
@@ -997,10 +999,10 @@ var ViewerPeer = class {
       ),
       PEER_CONNECT_TIMEOUT_MS
     );
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+    const offer2 = await pc.createOffer();
+    await pc.setLocalDescription(offer2);
     await waitForIceGathering(pc);
-    await this.transport.send("offer", this.broadcasterId, pc.localDescription?.sdp ?? offer.sdp);
+    await this.transport.send("offer", this.broadcasterId, pc.localDescription?.sdp ?? offer2.sdp);
   }
   async handleAnswer(sdp) {
     if (!this.pc) return;
@@ -1348,6 +1350,7 @@ function initWatcher() {
 var PLUGIN_NAME = "P2PShare";
 var FILE_NAME = "P2PShare.plugin.js";
 var RETRY_WHEN_BUSY_MS = 5 * 60 * 1e3;
+var CHECK_INTERVAL_MS = 6 * 60 * 60 * 1e3;
 function isBusy() {
   return isBroadcasting() || watchingCount() > 0;
 }
@@ -1371,15 +1374,43 @@ function install(source, version) {
     const target = path.join(BdApi.Plugins.folder, FILE_NAME);
     fs.writeFileSync(target, source, "utf8");
     BdApi.UI.showToast(
-      `P2PShare atualizado para ${version}. Recarregando\u2026`,
+      `P2PShare atualizado para ${version}.`,
       { type: "success" }
     );
+    return true;
   } catch (err) {
     BdApi.UI.showToast(
       `N\xE3o deu para gravar a atualiza\xE7\xE3o: ${err.message}`,
       { type: "error" }
     );
+    return false;
   }
+}
+function offer(source, version) {
+  const close = BdApi.UI.showNotice(
+    `P2PShare ${version} dispon\xEDvel (voc\xEA tem ${PLUGIN_VERSION}).`,
+    {
+      type: "info",
+      buttons: [{
+        label: "Atualizar",
+        onClick: () => {
+          if (isBusy()) {
+            BdApi.UI.showToast(
+              "Termine a transmiss\xE3o antes de atualizar \u2014 o plugin recarrega e a sess\xE3o cairia.",
+              { type: "warning" }
+            );
+            return;
+          }
+          if (install(source, version)) {
+            try {
+              close();
+            } catch {
+            }
+          }
+        }
+      }]
+    }
+  );
 }
 async function checkForUpdate() {
   if (!UPDATE_URL) return;
@@ -1397,35 +1428,28 @@ async function checkForUpdate() {
   }
   const remote = parseMetaVersion(source);
   if (!remote || !isNewer(remote, PLUGIN_VERSION)) return;
-  const close = BdApi.UI.showNotice(
-    `P2PShare ${remote} dispon\xEDvel (voc\xEA tem ${PLUGIN_VERSION}).`,
-    {
-      type: "info",
-      buttons: [{
-        label: "Atualizar",
-        onClick: () => {
-          if (isBusy()) {
-            BdApi.UI.showToast(
-              "Termine a transmiss\xE3o antes de atualizar \u2014 o plugin recarrega e a sess\xE3o cairia.",
-              { type: "warning" }
-            );
-            return;
-          }
-          install(source, remote);
-          try {
-            close();
-          } catch {
-          }
-        }
-      }]
-    }
-  );
+  if (isBusy()) {
+    setTimeout(() => {
+      void checkForUpdate();
+    }, RETRY_WHEN_BUSY_MS);
+    return;
+  }
+  if (loadSetting("autoUpdate", true)) install(source, remote);
+  else offer(source, remote);
+}
+function startUpdateChecks() {
+  void checkForUpdate();
+  const timer = setInterval(() => {
+    void checkForUpdate();
+  }, CHECK_INTERVAL_MS);
+  return () => clearInterval(timer);
 }
 
 // bd-entry.ts
 var P2PShare = class {
   cleanupWatcher = null;
   cleanupState = null;
+  cleanupUpdater = null;
   start() {
     ui_exports.injectStyles();
     this.cleanupWatcher = initWatcher();
@@ -1444,12 +1468,14 @@ var P2PShare = class {
       }
     });
     this.cleanupState = onBroadcastStateChange(ui_exports.updateLauncher);
-    void checkForUpdate();
+    this.cleanupUpdater = startUpdateChecks();
   }
   stop() {
     void stopBroadcast();
     this.cleanupState?.();
     this.cleanupState = null;
+    this.cleanupUpdater?.();
+    this.cleanupUpdater = null;
     this.cleanupWatcher?.();
     this.cleanupWatcher = null;
     ui_exports.unmountLauncher();
@@ -1477,7 +1503,19 @@ var P2PShare = class {
       label.textContent = `Or\xE7amento de upload: ${slider.value} Mbps`;
       saveSetting("uploadBudgetMbps", Number(slider.value));
     });
-    wrap.append(label, hint, slider);
+    const auto = document.createElement("label");
+    auto.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:20px;cursor:pointer";
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = loadSetting("autoUpdate", true);
+    check.addEventListener("change", () => saveSetting("autoUpdate", check.checked));
+    const autoText = document.createElement("span");
+    autoText.textContent = "Atualizar sozinho quando sair vers\xE3o nova";
+    auto.append(check, autoText);
+    const autoHint = document.createElement("div");
+    autoHint.textContent = "Desligado, o plugin apenas avisa e espera voc\xEA clicar. Nunca atualiza durante uma transmiss\xE3o.";
+    autoHint.style.cssText = "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
+    wrap.append(label, hint, slider, auto, autoHint);
     return wrap;
   }
 };

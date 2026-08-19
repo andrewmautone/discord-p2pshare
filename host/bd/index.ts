@@ -7,20 +7,11 @@
 import { DEFAULT_BUDGET_MBPS } from "../../constants";
 import type { Host, ToastKind } from "../types";
 import * as api from "./api";
+import { loadSetting } from "./settings";
 import * as ui from "./ui";
 
 declare const BdApi: any;
 
-const STORE = "P2PShare";
-
-export function loadSetting<T>(key: string, fallback: T): T {
-    const value = BdApi.Data.load(STORE, key);
-    return value === undefined || value === null ? fallback : (value as T);
-}
-
-export function saveSetting(key: string, value: unknown): void {
-    BdApi.Data.save(STORE, key, value);
-}
 
 const TOAST_TYPE: Record<ToastKind, string> = {
     info: "info",
@@ -57,3 +48,4 @@ export const host: Host = {
 
 export { ui };
 export type { BeaconNotice, Host, HostMessage, ToastKind } from "../types";
+export { loadSetting, saveSetting } from "./settings";

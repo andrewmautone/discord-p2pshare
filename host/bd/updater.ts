@@ -8,6 +8,7 @@ import { isBroadcasting } from "../../broadcast";
 import { PLUGIN_VERSION, UPDATE_URL } from "../../constants";
 import { isNewer, looksLikePlugin, parseMetaVersion } from "../../updater";
 import { watchingCount } from "../../watch";
+import { loadSetting } from "./settings";
 
 declare const BdApi: any;
 
@@ -16,6 +17,8 @@ const FILE_NAME = "P2PShare.plugin.js";
 
 /** Quando ocupado, tenta de novo daqui a pouco em vez de desistir de vez. */
 const RETRY_WHEN_BUSY_MS = 5 * 60 * 1000;
+/** Checagem periódica, para quem deixa o Discord aberto por dias. */
+const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Gravar o arquivo faz o BetterDiscord recarregar o plugin na hora
@@ -27,19 +30,6 @@ const RETRY_WHEN_BUSY_MS = 5 * 60 * 1000;
 function isBusy(): boolean {
     return isBroadcasting() || watchingCount() > 0;
 }
-
-/**
- * Atualização automática sem servidor próprio.
- *
- * O updater embutido do BetterDiscord só atualiza addons da loja oficial deles
- * (ele resolve um id numérico via betterdiscord.app), então plugin
- * auto-hospedado precisa se virar. Aqui buscamos o arquivo publicado, comparamos
- * o `@version` do cabeçalho e — com autorização do usuário — gravamos por cima.
- * O BetterDiscord recarrega o plugin sozinho ao ver o arquivo mudar.
- *
- * Nunca sobrescreve sem perguntar: instalar código novo é decisão de quem usa,
- * não do plugin.
- */
 
 async function fetchLatest(): Promise<string | null> {
     try {
@@ -56,7 +46,7 @@ async function fetchLatest(): Promise<string | null> {
     }
 }
 
-function install(source: string, version: string): void {
+function install(source: string, version: string): boolean {
     try {
         const fs = require("fs");
         const path = require("path");
@@ -64,46 +54,26 @@ function install(source: string, version: string): void {
 
         fs.writeFileSync(target, source, "utf8");
 
+        // Atualização automática não pode ser invisível: quem usa tem o
+        // direito de saber que o código mudou embaixo dele.
         BdApi.UI.showToast(
-            `P2PShare atualizado para ${version}. Recarregando…`,
+            `P2PShare atualizado para ${version}.`,
             { type: "success" }
         );
+        return true;
     } catch (err) {
         BdApi.UI.showToast(
             `Não deu para gravar a atualização: ${(err as Error).message}`,
             { type: "error" }
         );
+        return false;
     }
 }
 
-/**
- * Checa se saiu versão nova e, se saiu, oferece instalar.
- * Falha em silêncio: quem abriu o Discord quer usar o Discord, não lidar com
- * um erro de updater.
- */
-export async function checkForUpdate(): Promise<void> {
-    if (!UPDATE_URL) return;
-
-    if (isBusy()) {
-        // Nem checa: o aviso apareceria no meio da transmissão e o clique
-        // derrubaria a sessão.
-        setTimeout(() => { void checkForUpdate(); }, RETRY_WHEN_BUSY_MS);
-        return;
-    }
-
-    const source = await fetchLatest();
-    if (!source) return;
-
-    if (!looksLikePlugin(source, PLUGIN_NAME)) {
-        console.warn("[P2PShare] updater: resposta não parece o plugin, ignorando");
-        return;
-    }
-
-    const remote = parseMetaVersion(source);
-    if (!remote || !isNewer(remote, PLUGIN_VERSION)) return;
-
+/** Aviso com botão, para quem prefere decidir a cada versão. */
+function offer(source: string, version: string): void {
     const close = BdApi.UI.showNotice(
-        `P2PShare ${remote} disponível (você tem ${PLUGIN_VERSION}).`,
+        `P2PShare ${version} disponível (você tem ${PLUGIN_VERSION}).`,
         {
             type: "info",
             buttons: [{
@@ -119,14 +89,61 @@ export async function checkForUpdate(): Promise<void> {
                         return;
                     }
 
-                    install(source, remote);
-                    try {
-                        close();
-                    } catch {
-                        // o aviso pode já ter sido fechado pelo usuário
+                    if (install(source, version)) {
+                        try {
+                            close();
+                        } catch {
+                            // o aviso pode já ter sido fechado pelo usuário
+                        }
                     }
                 }
             }]
         }
     );
+}
+
+/**
+ * Checa se saiu versão nova e instala, ou oferece, conforme a configuração.
+ * Falha em silêncio: quem abriu o Discord quer usar o Discord, não lidar com
+ * um erro de updater.
+ */
+export async function checkForUpdate(): Promise<void> {
+    if (!UPDATE_URL) return;
+
+    if (isBusy()) {
+        // Nem checa: atualizar agora derrubaria a sessão em andamento.
+        setTimeout(() => { void checkForUpdate(); }, RETRY_WHEN_BUSY_MS);
+        return;
+    }
+
+    const source = await fetchLatest();
+    if (!source) return;
+
+    if (!looksLikePlugin(source, PLUGIN_NAME)) {
+        console.warn("[P2PShare] updater: resposta não parece o plugin, ignorando");
+        return;
+    }
+
+    const remote = parseMetaVersion(source);
+    if (!remote || !isNewer(remote, PLUGIN_VERSION)) return;
+
+    // Entre baixar e gravar passou um await; a sessão pode ter começado.
+    if (isBusy()) {
+        setTimeout(() => { void checkForUpdate(); }, RETRY_WHEN_BUSY_MS);
+        return;
+    }
+
+    if (loadSetting("autoUpdate", true)) install(source, remote);
+    else offer(source, remote);
+}
+
+/**
+ * Liga a checagem periódica. Devolve a função de limpeza.
+ * Sem isto, quem deixa o Discord aberto por dias nunca receberia atualização.
+ */
+export function startUpdateChecks(): () => void {
+    void checkForUpdate();
+
+    const timer = setInterval(() => { void checkForUpdate(); }, CHECK_INTERVAL_MS);
+    return () => clearInterval(timer);
 }

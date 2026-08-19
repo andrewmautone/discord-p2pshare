@@ -7,7 +7,7 @@
 import { getBroadcastState, onBroadcastStateChange, startBroadcast, stopBroadcast } from "./broadcast";
 import { DEFAULT_BUDGET_MBPS } from "./constants";
 import { loadSetting, saveSetting, ui } from "./host/bd";
-import { checkForUpdate } from "./host/bd/updater";
+import { startUpdateChecks } from "./host/bd/updater";
 import { initWatcher } from "./watch";
 
 declare const BdApi: any;
@@ -22,6 +22,7 @@ declare const BdApi: any;
 export default class P2PShare {
     private cleanupWatcher: (() => void) | null = null;
     private cleanupState: (() => void) | null = null;
+    private cleanupUpdater: (() => void) | null = null;
 
     start(): void {
         ui.injectStyles();
@@ -46,7 +47,7 @@ export default class P2PShare {
         this.cleanupState = onBroadcastStateChange(ui.updateLauncher);
 
         // Não bloqueia o start: se o host estiver fora do ar, o plugin sobe igual.
-        void checkForUpdate();
+        this.cleanupUpdater = startUpdateChecks();
     }
 
     stop(): void {
@@ -54,6 +55,9 @@ export default class P2PShare {
 
         this.cleanupState?.();
         this.cleanupState = null;
+
+        this.cleanupUpdater?.();
+        this.cleanupUpdater = null;
 
         this.cleanupWatcher?.();
         this.cleanupWatcher = null;
@@ -90,7 +94,27 @@ export default class P2PShare {
             saveSetting("uploadBudgetMbps", Number(slider.value));
         });
 
-        wrap.append(label, hint, slider);
+        const auto = document.createElement("label");
+        auto.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:20px;cursor:pointer";
+
+        const check = document.createElement("input");
+        check.type = "checkbox";
+        check.checked = loadSetting("autoUpdate", true);
+        check.addEventListener("change", () => saveSetting("autoUpdate", check.checked));
+
+        const autoText = document.createElement("span");
+        autoText.textContent = "Atualizar sozinho quando sair versão nova";
+
+        auto.append(check, autoText);
+
+        const autoHint = document.createElement("div");
+        autoHint.textContent =
+            "Desligado, o plugin apenas avisa e espera você clicar. " +
+            "Nunca atualiza durante uma transmissão.";
+        autoHint.style.cssText =
+            "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
+
+        wrap.append(label, hint, slider, auto, autoHint);
         return wrap;
     }
 }
