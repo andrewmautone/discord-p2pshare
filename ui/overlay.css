@@ -50,3 +50,39 @@
     background: #000;
     object-fit: contain;
 }
+
+.p2ps-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--status-danger, #ed4245);
+    color: #fff;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    flex-shrink: 0;
+}
+
+.p2ps-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #fff;
+    animation: p2ps-pulse 2s ease-in-out infinite;
+}
+
+@keyframes p2ps-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .3; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .p2ps-live-dot { animation: none; }
+}
+
+.p2ps-vol {
+    width: 64px;
+    accent-color: var(--brand-experiment, #5865f2);
+}

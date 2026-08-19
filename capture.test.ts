@@ -33,6 +33,42 @@ describe("captureScreen", () => {
         assert.equal(usedConstraints.video.mandatory.chromeMediaSourceId, "window:12");
     });
 
+    it("pede o audio do sistema junto do video", async () => {
+        let usedConstraints: any;
+
+        await captureScreen({
+            getSources: async () => twoSources,
+            pickSource: async () => "screen:0",
+            getUserMedia: async c => { usedConstraints = c; return fakeStream; }
+        });
+
+        assert.equal(
+            usedConstraints.audio.mandatory.chromeMediaSource,
+            "desktop",
+            "sem isto a transmissao vai muda"
+        );
+    });
+
+    it("cai para video sem audio quando o loopback nao existe", async () => {
+        const attempts: any[] = [];
+
+        const stream = await captureScreen({
+            getSources: async () => twoSources,
+            pickSource: async () => "screen:0",
+            getUserMedia: async c => {
+                attempts.push(c);
+                // Primeira tentativa (com audio) falha, como em maquinas sem loopback.
+                if (c.audio) throw new Error("audio device not found");
+                return fakeStream;
+            }
+        });
+
+        assert.equal(stream, fakeStream);
+        assert.equal(attempts.length, 2, "tenta com audio, depois sem");
+        assert.equal(attempts[1].audio, false);
+        assert.equal(attempts[1].video.mandatory.chromeMediaSourceId, "screen:0");
+    });
+
     it("cai para getDisplayMedia quando não há API nativa", async () => {
         const stream = await captureScreen({
             getSources: async () => { throw new Error("sem DiscordNative"); },

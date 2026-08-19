@@ -30,6 +30,14 @@ export interface BeaconNotice {
     broadcasterName: string;
 }
 
+export interface OverlayOptions {
+    /**
+     * Silencia o áudio local. Obrigatório na prévia da própria tela: sem isso
+     * o áudio do sistema volta pelos alto-falantes e microfona.
+     */
+    muted?: boolean;
+}
+
 export interface Host {
     // --- identidade e contexto ---
     getCurrentUserId(): string;
@@ -62,7 +70,8 @@ export interface Host {
         sessionId: string,
         stream: MediaStream,
         title: string,
-        onClose: () => void
+        onClose: () => void,
+        opts?: OverlayOptions
     ): void;
     unmountOverlay(sessionId: string): void;
     unmountAllOverlays(): void;

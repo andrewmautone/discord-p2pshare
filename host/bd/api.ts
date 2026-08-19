@@ -13,27 +13,62 @@ declare const BdApi: any;
  *
  * Cada lookup é preguiçoso e memoizado: procurar no webpack é caro, e no
  * momento em que o plugin carrega nem todos os módulos existem ainda.
+ *
+ * Um mesmo módulo pode estar exposto de formas diferentes conforme a versão do
+ * Discord — direto no export, dentro de `default`, ou só alcançável varrendo
+ * os exports um a um. Por isso cada busca tenta várias estratégias antes de
+ * desistir, e o erro diz QUAL módulo faltou: sem o nome, o stack trace do
+ * BetterDiscord não permite diagnosticar nada.
  */
-function lazy<T>(find: () => T): () => T {
-    let cached: T | undefined;
+const { getModule } = BdApi.Webpack;
+
+type Filter = (m: any) => boolean;
+
+function find(name: string, filter: Filter): () => any {
+    let cached: any;
+
     return () => {
+        if (cached !== undefined) return cached;
+
+        // 1. export direto
+        cached = getModule(filter);
+
+        // 2. varrendo cada export do módulo
         if (cached === undefined) {
-            cached = find();
-            if (cached === undefined) {
-                throw new Error("[P2PShare] módulo do Discord não encontrado");
-            }
+            cached = getModule(filter, { searchExports: true });
         }
+
+        // 3. módulo cujo conteúdo real está em `default`
+        if (cached === undefined) {
+            const wrapper = getModule((m: any) => m?.default && filter(m.default));
+            if (wrapper) cached = wrapper.default;
+        }
+
+        if (cached === undefined || cached === null) {
+            throw new Error(
+                `[P2PShare] não encontrei o módulo ${name} no Discord. ` +
+                "Provavelmente o Discord mudou a estrutura interna — reporte com este nome."
+            );
+        }
+
         return cached;
     };
 }
 
-const { getModule } = BdApi.Webpack;
+const UserStore = find("UserStore",
+    m => m?.getCurrentUser && m?.getUser);
 
-const UserStore = lazy(() => getModule((m: any) => m?.getCurrentUser && m?.getUser));
-const SelectedChannelStore = lazy(() => getModule((m: any) => m?.getVoiceChannelId && m?.getChannelId));
-const FluxDispatcher = lazy(() => getModule((m: any) => m?.dispatch && m?.subscribe && m?.unsubscribe));
-const RestAPI = lazy(() => getModule((m: any) => typeof m === "object" && m?.del && m?.put && m?.post));
-const CloudUpload = lazy(() => getModule((m: any) => m?.prototype?.trackUploadFinished));
+const SelectedChannelStore = find("SelectedChannelStore",
+    m => m?.getVoiceChannelId && m?.getChannelId);
+
+const FluxDispatcher = find("FluxDispatcher",
+    m => m?.dispatch && m?.subscribe && m?.unsubscribe);
+
+const RestAPI = find("RestAPI",
+    m => typeof m === "object" && m?.del && m?.put && m?.post);
+
+const CloudUpload = find("CloudUpload",
+    m => m?.prototype?.trackUploadFinished);
 
 /** Snowflake a partir do relógio, para o nonce da mensagem. */
 function nonce(): string {

@@ -162,6 +162,30 @@ const CSS = `
     user-select: none;
 }
 .p2ps-overlay-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p2ps-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--status-danger, #ed4245);
+    color: #fff;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    flex-shrink: 0;
+}
+.p2ps-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #fff;
+    animation: p2ps-pulse 2s ease-in-out infinite;
+}
+@keyframes p2ps-pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
+@media (prefers-reduced-motion: reduce) { .p2ps-live-dot { animation: none } }
+.p2ps-vol { width: 64px; accent-color: var(--brand-experiment, #5865f2); }
+.p2ps-overlay-bar button:disabled { opacity: .4; cursor: default; }
 .p2ps-overlay-bar button {
     background: none;
     border: none;
@@ -406,7 +430,8 @@ export function mountOverlay(
     sessionId: string,
     stream: MediaStream,
     title: string,
-    onClose: () => void
+    onClose: () => void,
+    opts: { muted?: boolean; } = {}
 ): void {
     unmountOverlay(sessionId);
 
@@ -415,18 +440,52 @@ export function mountOverlay(
     el.style.left = "80px";
     el.style.top = "80px";
     el.style.width = "640px";
+
+    // Controles proprios em vez do player nativo: para um MediaStream ao vivo
+    // o player do Chrome desenha uma linha do tempo com duracao, o que faz a
+    // transmissao parecer um video gravado.
     el.innerHTML = `
         <div class="p2ps-overlay-bar">
+            <span class="p2ps-live"><span class="p2ps-live-dot"></span>AO VIVO</span>
             <span class="p2ps-overlay-title"></span>
+            <button data-act="mute" title="Silenciar"></button>
+            <input class="p2ps-vol" type="range" min="0" max="100" value="100" title="Volume">
             <button data-act="full" title="Tela cheia">⛶</button>
             <button data-act="close" title="Fechar">✕</button>
         </div>
-        <video autoplay playsinline controls></video>`;
+        <video autoplay playsinline></video>`;
 
-    (el.querySelector(".p2ps-overlay-title") as HTMLElement).textContent = `🔴 ${title}`;
+    (el.querySelector(".p2ps-overlay-title") as HTMLElement).textContent = title;
 
     const video = el.querySelector("video") as HTMLVideoElement;
     video.srcObject = stream;
+    video.muted = opts.muted === true;
+
+    const muteBtn = el.querySelector('[data-act="mute"]') as HTMLButtonElement;
+    const vol = el.querySelector(".p2ps-vol") as HTMLInputElement;
+
+    const paintAudio = () => {
+        muteBtn.textContent = video.muted || video.volume === 0 ? "🔇" : "🔊";
+    };
+
+    if (opts.muted) {
+        // Na propria previa nao ha o que ouvir: o audio sai pelos alto-falantes.
+        muteBtn.disabled = true;
+        vol.disabled = true;
+        muteBtn.title = "A previa da sua tela fica sempre muda";
+    } else {
+        muteBtn.addEventListener("click", () => {
+            video.muted = !video.muted;
+            paintAudio();
+        });
+        vol.addEventListener("input", () => {
+            video.volume = Number(vol.value) / 100;
+            video.muted = video.volume === 0;
+            paintAudio();
+        });
+    }
+
+    paintAudio();
 
     el.querySelector('[data-act="full"]')!.addEventListener("click", () => {
         void video.requestFullscreen();

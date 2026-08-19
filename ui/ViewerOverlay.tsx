@@ -14,17 +14,20 @@ interface OverlayProps {
     stream: MediaStream;
     title: string;
     onClose: () => void;
+    muted: boolean;
 }
 
-function ViewerOverlay({ stream, title, onClose }: OverlayProps) {
+function ViewerOverlay({ stream, title, onClose, muted }: OverlayProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const boxRef = useRef<HTMLDivElement>(null);
     const [pos, setPos] = useState({ x: settings.store.overlayX, y: settings.store.overlayY });
     const drag = useRef<{ dx: number; dy: number; } | null>(null);
 
     useEffect(() => {
-        if (videoRef.current) videoRef.current.srcObject = stream;
-    }, [stream]);
+        if (!videoRef.current) return;
+        videoRef.current.srcObject = stream;
+        videoRef.current.muted = muted;
+    }, [stream, muted]);
 
     useEffect(() => {
         const onMove = (e: MouseEvent) => {
@@ -65,11 +68,32 @@ function ViewerOverlay({ stream, title, onClose }: OverlayProps) {
             style={{ left: pos.x, top: pos.y, width: settings.store.overlayWidth }}
         >
             <div className="p2ps-overlay-bar" onMouseDown={startDrag}>
-                <span className="p2ps-overlay-title">🔴 {title}</span>
+                <span className="p2ps-live"><span className="p2ps-live-dot" />AO VIVO</span>
+                <span className="p2ps-overlay-title">{title}</span>
+                {!muted && (
+                    <input
+                        className="p2ps-vol"
+                        type="range"
+                        min={0}
+                        max={100}
+                        defaultValue={100}
+                        title="Volume"
+                        onMouseDown={e => e.stopPropagation()}
+                        onInput={e => {
+                            const v = Number((e.target as HTMLInputElement).value) / 100;
+                            if (videoRef.current) {
+                                videoRef.current.volume = v;
+                                videoRef.current.muted = v === 0;
+                            }
+                        }}
+                    />
+                )}
                 <button onClick={() => void videoRef.current?.requestFullscreen()} title="Tela cheia">⛶</button>
                 <button onClick={onClose} title="Fechar">✕</button>
             </div>
-            <video ref={videoRef} autoPlay playsInline controls />
+            {/* Sem `controls`: para um stream ao vivo o player nativo desenha
+                uma linha do tempo, e a transmissao parece video gravado. */}
+            <video ref={videoRef} autoPlay playsInline />
         </div>
     );
 }
@@ -80,7 +104,8 @@ export function mountOverlay(
     sessionId: string,
     stream: MediaStream,
     title: string,
-    onClose: () => void
+    onClose: () => void,
+    opts: { muted?: boolean; } = {}
 ): void {
     unmountOverlay(sessionId);
 
@@ -89,7 +114,14 @@ export function mountOverlay(
     document.body.appendChild(container);
 
     const root = createRoot(container);
-    root.render(<ViewerOverlay stream={stream} title={title} onClose={onClose} />);
+    root.render(
+        <ViewerOverlay
+            stream={stream}
+            title={title}
+            onClose={onClose}
+            muted={opts.muted === true}
+        />
+    );
 
     mounted.set(sessionId, { root, container });
 }

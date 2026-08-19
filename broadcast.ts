@@ -27,6 +27,11 @@ export interface BroadcastState {
 let session: Session | null = null;
 const listeners = new Set<(state: BroadcastState) => void>();
 
+/** Chave da prévia local, separada das sessões que estamos assistindo. */
+function selfPreviewKey(sessionId: string): string {
+    return `self:${sessionId}`;
+}
+
 function currentState(): BroadcastState {
     return { active: session !== null, viewers: session?.peers.viewerCount ?? 0 };
 }
@@ -110,6 +115,18 @@ export async function startBroadcast(): Promise<void> {
     }
 
     session = { sessionId, channelId, beaconId, stream, peers, unsubscribe };
+
+    // Prévia da própria tela. Muda de propósito: o áudio capturado é o do
+    // sistema, e reproduzi-lo de volta nos alto-falantes microfonaria.
+    // Fechar a prévia não encerra a transmissão — é só uma janela.
+    host.mountOverlay(
+        selfPreviewKey(sessionId),
+        stream,
+        "Sua tela",
+        () => host.unmountOverlay(selfPreviewKey(sessionId)),
+        { muted: true }
+    );
+
     notify();
     host.toast("Transmitindo via P2P", "success");
 }
@@ -121,6 +138,7 @@ export async function stopBroadcast(): Promise<void> {
     // Zera antes de limpar: o evento "ended" da track reentraria aqui.
     session = null;
 
+    host.unmountOverlay(selfPreviewKey(current.sessionId));
     current.unsubscribe();
     current.peers.closeAll();
     current.stream.getTracks().forEach(track => track.stop());

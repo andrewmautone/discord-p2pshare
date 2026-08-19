@@ -70,17 +70,28 @@ export async function captureScreen(deps: CaptureDeps = {}): Promise<MediaStream
         // Cancelar é decisão do usuário, não falha: não cai para o outro caminho.
         if (!sourceId) throw new CaptureError("captura cancelada pelo usuário");
 
+        const video = {
+            mandatory: {
+                chromeMediaSource: "desktop",
+                chromeMediaSourceId: sourceId,
+                maxFrameRate: 60
+            }
+        };
+
+        // Áudio do sistema (loopback). No Electron isto exige chromeMediaSource
+        // "desktop" também no áudio — sem esse bloco a transmissão vai muda.
         try {
             return await d.getUserMedia({
-                audio: false,
-                video: {
-                    mandatory: {
-                        chromeMediaSource: "desktop",
-                        chromeMediaSourceId: sourceId,
-                        maxFrameRate: 60
-                    }
-                }
+                audio: { mandatory: { chromeMediaSource: "desktop" } },
+                video
             });
+        } catch (err) {
+            console.warn("[P2PShare] sem áudio do sistema, transmitindo só vídeo", err);
+        }
+
+        // Nem toda máquina tem loopback: melhor transmitir mudo que não transmitir.
+        try {
+            return await d.getUserMedia({ audio: false, video });
         } catch (err) {
             throw new CaptureError(`falha ao capturar a fonte: ${(err as Error).message}`);
         }
