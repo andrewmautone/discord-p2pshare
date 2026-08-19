@@ -107,10 +107,18 @@ begin
   Branches[1] := 'ptb';
   Branches[2] := 'canary';
 
-  { Roda para cada branch: o CLI simplesmente nao faz nada nas que nao existem. }
+  { Roda para cada branch: o CLI simplesmente nao faz nada nas que nao existem.
+
+    O stdin PRECISA vir de NUL. O CLI do Vencord termina com "Press Enter to
+    exit" e fica bloqueado esperando input; rodando escondido nao existe
+    ninguem para apertar Enter, e o instalador congela por minutos sem dar
+    sinal nenhum. Com NUL o stdin da EOF na hora e ele encerra sozinho.
+
+    Medido: 4,5 minutos travado sem isto, 0,42 segundos com. }
   for I := 0 to 2 do
-    Exec(Cli, '-uninstall -branch ' + Branches[I], '', SW_HIDE,
-         ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{cmd}'),
+         '/C ""' + Cli + '" -uninstall -branch ' + Branches[I] + '" < NUL',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
   { Tira o codigo injetado, mas preserva configuracoes e temas do usuario
     caso ele queira voltar para o Vencord um dia. }
