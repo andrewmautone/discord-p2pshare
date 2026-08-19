@@ -13,6 +13,7 @@ import {
     getCurrentUsername,
     getUsername,
     getVoiceChannelId,
+    openDm,
     sendMessage,
     uploadTextAttachment
 } from "../discord/api";
@@ -38,6 +39,7 @@ export const host: Host = {
     deleteMessage,
     uploadTextAttachment,
     fetchAttachmentText,
+    openDm,
 
     onMessageCreate,
     onMessageDelete,

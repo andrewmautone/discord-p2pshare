@@ -253,6 +253,24 @@ async function sendMessage(channelId, content) {
   });
   return res.body.id;
 }
+var dmCache = /* @__PURE__ */ new Map();
+async function openDm(userId) {
+  const cached = dmCache.get(userId);
+  if (cached) return cached;
+  try {
+    const res = await RestAPI().post({
+      url: "/users/@me/channels",
+      body: { recipient_id: userId }
+    });
+    const id = res.body?.id;
+    if (!id) return null;
+    dmCache.set(userId, id);
+    return id;
+  } catch (err) {
+    console.warn("[P2PShare] n\xE3o deu para abrir DM", err);
+    return null;
+  }
+}
 async function deleteMessage(channelId, messageId) {
   await RestAPI().del({ url: `/channels/${channelId}/messages/${messageId}` });
 }
@@ -851,6 +869,7 @@ var host = {
   deleteMessage,
   uploadTextAttachment,
   fetchAttachmentText,
+  openDm,
   onMessageCreate,
   onMessageDelete,
   toast: (message, kind) => BdApi.UI.showToast(message, { type: TOAST_TYPE[kind] }),
@@ -1066,6 +1085,22 @@ function parseHandshakeBody(text) {
   return { kind: body.type, sdp: body.sdp };
 }
 
+// handshake.ts
+async function deliverHandshake(sender, payload) {
+  const { fallbackChannelId, targetUserId, filename, body, marker } = payload;
+  try {
+    const dm = await sender.openDm(targetUserId);
+    if (dm) {
+      await sender.upload(dm, filename, body, marker);
+      return "dm";
+    }
+  } catch (err) {
+    console.warn("[P2PShare] DM indispon\xEDvel, usando o canal", err);
+  }
+  await sender.upload(fallbackChannelId, filename, body, marker);
+  return "channel";
+}
+
 // signaling.ts
 function postBeacon(channelId, sessionId, username) {
   return host.sendMessage(channelId, beaconContent(sessionId, username));
@@ -1074,12 +1109,22 @@ function removeBeacon(channelId, messageId) {
   return host.deleteMessage(channelId, messageId);
 }
 async function sendHandshake(channelId, sessionId, kind, targetUserId, sdp) {
-  await host.uploadTextAttachment(
-    channelId,
-    formatHandshakeName({ sessionId, kind, targetUserId }),
-    handshakeBody(kind, sdp),
-    handshakeMarker(sessionId, kind)
+  const via = await deliverHandshake(
+    {
+      openDm: host.openDm,
+      upload: host.uploadTextAttachment
+    },
+    {
+      fallbackChannelId: channelId,
+      targetUserId,
+      filename: formatHandshakeName({ sessionId, kind, targetUserId }),
+      body: handshakeBody(kind, sdp),
+      marker: handshakeMarker(sessionId, kind)
+    }
   );
+  if (via === "channel") {
+    console.info("[P2PShare] handshake foi pelo canal: DM indispon\xEDvel");
+  }
 }
 function observeSignals(handlers) {
   const myId = host.getCurrentUserId();

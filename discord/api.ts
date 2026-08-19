@@ -58,6 +58,38 @@ export async function sendMessage(channelId: string, content: string): Promise<s
     return res.body.id as string;
 }
 
+const dmCache = new Map<string, string>();
+
+/**
+ * Abre (ou reusa) a DM com um usuário e devolve o id do canal.
+ *
+ * Devolve null quando o Discord recusa — DM fechada, bloqueio, sem servidor
+ * em comum. Quem chama trata isso como "use o canal público".
+ *
+ * O id é memoizado: o Discord devolve sempre o mesmo canal, e cada handshake
+ * faria uma chamada à toa.
+ */
+export async function openDm(userId: string): Promise<string | null> {
+    const cached = dmCache.get(userId);
+    if (cached) return cached;
+
+    try {
+        const res = await RestAPI.post({
+            url: "/users/@me/channels",
+            body: { recipient_id: userId }
+        });
+
+        const id = res.body?.id as string | undefined;
+        if (!id) return null;
+
+        dmCache.set(userId, id);
+        return id;
+    } catch (err) {
+        console.warn("[P2PShare] não deu para abrir DM", err);
+        return null;
+    }
+}
+
 export async function deleteMessage(channelId: string, messageId: string): Promise<void> {
     await RestAPI.del({ url: Constants.Endpoints.MESSAGE(channelId, messageId) });
 }

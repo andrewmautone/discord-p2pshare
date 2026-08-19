@@ -14,6 +14,7 @@ import {
 } from "./beacon";
 import { formatHandshakeName, type HandshakeKind, parseHandshakeName } from "./codec";
 import { HANDSHAKE_TTL_MS } from "./constants";
+import { deliverHandshake } from "./handshake";
 import { host } from "./host";
 
 export type { Beacon } from "./beacon";
@@ -33,7 +34,13 @@ export function removeBeacon(channelId: string, messageId: string): Promise<void
     return host.deleteMessage(channelId, messageId);
 }
 
-/** Posta um offer/answer como anexo .txt, roteado pelo nome do arquivo. */
+/**
+ * Posta um offer/answer como anexo .txt, roteado pelo nome do arquivo.
+ *
+ * Vai por DM quando possível: o handshake é entre duas pessoas e nunca
+ * precisou ser público. O canal de voz continua como reserva, para quando a
+ * DM estiver bloqueada.
+ */
 export async function sendHandshake(
     channelId: string,
     sessionId: string,
@@ -41,12 +48,23 @@ export async function sendHandshake(
     targetUserId: string,
     sdp: string
 ): Promise<void> {
-    await host.uploadTextAttachment(
-        channelId,
-        formatHandshakeName({ sessionId, kind, targetUserId }),
-        handshakeBody(kind, sdp),
-        handshakeMarker(sessionId, kind)
+    const via = await deliverHandshake(
+        {
+            openDm: host.openDm,
+            upload: host.uploadTextAttachment
+        },
+        {
+            fallbackChannelId: channelId,
+            targetUserId,
+            filename: formatHandshakeName({ sessionId, kind, targetUserId }),
+            body: handshakeBody(kind, sdp),
+            marker: handshakeMarker(sessionId, kind)
+        }
     );
+
+    if (via === "channel") {
+        console.info("[P2PShare] handshake foi pelo canal: DM indisponível");
+    }
 }
 
 /**

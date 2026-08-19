@@ -59,6 +59,8 @@ export interface Host {
         content: string
     ): Promise<void>;
     fetchAttachmentText(url: string): Promise<string>;
+    /** Canal de DM com o usuário, ou null quando o Discord não deixa abrir. */
+    openDm(userId: string): Promise<string | null>;
 
     onMessageCreate(handler: (message: HostMessage) => void): () => void;
     onMessageDelete(handler: (channelId: string, messageId: string) => void): () => void;
