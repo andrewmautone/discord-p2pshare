@@ -22,7 +22,7 @@ describe("captureScreen", () => {
 
         const stream = await captureScreen({
             getSources: async () => twoSources,
-            pickSource: async sources => { offered = sources; return "window:12"; },
+            pickSource: async sources => { offered = sources; return { id: "window:12", audio: true }; },
             getUserMedia: async c => { usedConstraints = c; return fakeStream; },
             getDisplayMedia: async () => { throw new Error("não deveria ser chamado"); }
         });
@@ -38,7 +38,7 @@ describe("captureScreen", () => {
 
         await captureScreen({
             getSources: async () => twoSources,
-            pickSource: async () => "screen:0",
+            pickSource: async () => ({ id: "screen:0", audio: true }),
             getUserMedia: async c => { usedConstraints = c; return fakeStream; }
         });
 
@@ -57,7 +57,7 @@ describe("captureScreen", () => {
 
         await captureScreen({
             getSources: async () => twoSources,
-            pickSource: async () => "screen:0",
+            pickSource: async () => ({ id: "screen:0", audio: true }),
             getUserMedia: async (c: any) => {
                 constraints.push(c);
                 return {
@@ -78,7 +78,7 @@ describe("captureScreen", () => {
 
         const stream = await captureScreen({
             getSources: async () => twoSources,
-            pickSource: async () => "screen:0",
+            pickSource: async () => ({ id: "screen:0", audio: true }),
             getUserMedia: async (c: any) => {
                 if (c.video) return videoStream;
                 throw new Error("dispositivo removido");
@@ -93,7 +93,7 @@ describe("captureScreen", () => {
 
         await captureScreen({
             getSources: async () => twoSources,
-            pickSource: async () => "screen:0",
+            pickSource: async () => ({ id: "screen:0", audio: true }),
             getUserMedia: async c => { attempts.push(c); return fakeStream; }
         }, { audio: false });
 
@@ -106,7 +106,7 @@ describe("captureScreen", () => {
 
         const stream = await captureScreen({
             getSources: async () => twoSources,
-            pickSource: async () => "screen:0",
+            pickSource: async () => ({ id: "screen:0", audio: true }),
             getUserMedia: async c => {
                 attempts.push(c);
                 // Primeira tentativa (com audio) falha, como em maquinas sem loopback.
@@ -169,7 +169,7 @@ describe("captureScreen", () => {
         await assert.rejects(
             () => captureScreen({
                 getSources: async () => twoSources,
-                pickSource: async () => "screen:0",
+                pickSource: async () => ({ id: "screen:0", audio: true }),
                 getUserMedia: async () => { throw new Error("permissão negada"); }
             }),
             (err: Error) => err instanceof CaptureError && /permissão negada/.test(err.message)

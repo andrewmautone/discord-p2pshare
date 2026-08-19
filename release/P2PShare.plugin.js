@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.11.1
+ * @version 1.12.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -51,8 +51,9 @@ var defaultDeps = {
       thumbnailSize: { width: 320, height: 180 }
     });
   },
-  // Sem seletor injetado, transmite a primeira fonte (a tela principal).
-  pickSource: async (sources) => sources[0]?.id ?? null,
+  // Sem seletor injetado, transmite a primeira fonte, sem áudio: mandar o
+  // áudio do sistema devolveria a própria chamada para quem assiste.
+  pickSource: async (sources) => sources[0] ? { id: sources[0].id, audio: false } : null,
   combine: (tracks) => new MediaStream(tracks)
 };
 async function captureScreen(deps = {}, opts = {}) {
@@ -65,8 +66,10 @@ async function captureScreen(deps = {}, opts = {}) {
     console.warn("[P2PShare] DiscordNative indispon\xEDvel, tentando getDisplayMedia", err);
   }
   if (sources.length) {
-    const sourceId = await d.pickSource(sources);
-    if (!sourceId) throw new CaptureError("captura cancelada pelo usu\xE1rio");
+    const choice = await d.pickSource(sources);
+    if (!choice) throw new CaptureError("captura cancelada pelo usu\xE1rio");
+    const sourceId = choice.id;
+    const withAudio = wantAudio && choice.audio;
     const video = {
       mandatory: {
         chromeMediaSource: "desktop",
@@ -74,14 +77,14 @@ async function captureScreen(deps = {}, opts = {}) {
         maxFrameRate: 60
       }
     };
-    const isolated = wantAudio && opts.audioForSource ? await opts.audioForSource(sourceId) : null;
+    const isolated = withAudio && opts.audioForSource ? await opts.audioForSource(sourceId) : null;
     if (isolated) {
       const videoOnly = await d.getUserMedia({ audio: false, video }).catch((err) => {
         throw new CaptureError(`falha ao capturar a fonte: ${err.message}`);
       });
       return d.combine([...videoOnly.getTracks(), isolated]);
     }
-    if (wantAudio && opts.audioDeviceId) {
+    if (withAudio && opts.audioDeviceId) {
       const videoOnly = await d.getUserMedia({ audio: false, video }).catch((err) => {
         throw new CaptureError(`falha ao capturar a fonte: ${err.message}`);
       });
@@ -96,7 +99,7 @@ async function captureScreen(deps = {}, opts = {}) {
         return videoOnly;
       }
     }
-    if (wantAudio) {
+    if (withAudio) {
       try {
         return await d.getUserMedia({
           audio: { mandatory: { chromeMediaSource: "desktop" } },
@@ -126,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.11.1";
+var PLUGIN_VERSION = "1.12.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "3b71f2742c6e92b0dd9621a332a55ce0dc51b19ded802c9bfa548de9e476b3cf";
@@ -437,7 +440,9 @@ function spawnHelper(exe, args) {
     file: exe,
     // argv[0] é o próprio programa, como todo processo espera.
     args: [exe, ...args],
-    cwd: void 0,
+    // Caminho real, nunca undefined: a checagem nativa do Node 24 é
+    // mais estrita e aborta o processo em vez de reclamar.
+    cwd: BdApi.Plugins.folder,
     windowsHide: true,
     windowsVerbatimArguments: false,
     detached: false,
@@ -998,6 +1003,17 @@ var CSS = `
 @media (prefers-reduced-motion: reduce) {
     .p2ps-tile-bar { transition: none; }
 }
+.p2ps-audio-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--header-primary, #fff);
+    font-size: 13px;
+    cursor: pointer;
+}
+.p2ps-audio-toggle input:disabled + span { color: var(--text-muted, #72767d); }
+.p2ps-audio-toggle input { accent-color: var(--brand-experiment, #5865f2); }
+.p2ps-foot-space { flex: 1; }
 .p2ps-tile-cta {
     position: absolute;
     left: 50%;
@@ -1543,19 +1559,31 @@ function openSourcePicker(sources) {
                     <div class="p2ps-grid"></div>
                 </div>
                 <div class="p2ps-dialog-foot">
+                    <label class="p2ps-audio-toggle">
+                        <input type="checkbox" data-act="audio">
+                        <span data-act="audio-label"></span>
+                    </label>
+                    <span class="p2ps-foot-space"></span>
                     <button class="p2ps-btn p2ps-btn-secondary" data-act="cancel">Cancelar</button>
                     <button class="p2ps-btn" data-act="ok" disabled>Transmitir</button>
                 </div>
             </div>`;
     const grid = backdrop.querySelector(".p2ps-grid");
     const okBtn = backdrop.querySelector('[data-act="ok"]');
+    const audioCheck = backdrop.querySelector('[data-act="audio"]');
+    const audioLabel = backdrop.querySelector('[data-act="audio-label"]');
+    const audioAvailable = helperReady() && !nativeAudioBlocked();
+    audioCheck.disabled = !audioAvailable;
+    audioCheck.checked = audioAvailable && BdApi.Data.load("P2PShare", "captureAudio") !== false;
+    audioLabel.textContent = audioAvailable ? "Transmitir \xE1udio" : "\xC1udio indispon\xEDvel \u2014 componente ainda n\xE3o instalado";
+    audioCheck.addEventListener("change", () => BdApi.Data.save("P2PShare", "captureAudio", audioCheck.checked));
     let settled = false;
     const settle = (id) => {
       if (settled) return;
       settled = true;
       document.removeEventListener("keydown", onKey);
       backdrop.remove();
-      resolve(id);
+      resolve(id ? { id, audio: audioCheck.checked } : null);
     };
     const onKey = (e) => {
       if (e.key === "Escape") settle(null);

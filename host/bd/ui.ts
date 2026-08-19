@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import type { CaptureSource } from "../../capture";
+import type { CaptureChoice, CaptureSource } from "../../capture";
+import { helperReady, nativeAudioBlocked } from "./audioHelper";
 
 declare const BdApi: any;
 
@@ -317,6 +318,17 @@ const CSS = `
 @media (prefers-reduced-motion: reduce) {
     .p2ps-tile-bar { transition: none; }
 }
+.p2ps-audio-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--header-primary, #fff);
+    font-size: 13px;
+    cursor: pointer;
+}
+.p2ps-audio-toggle input:disabled + span { color: var(--text-muted, #72767d); }
+.p2ps-audio-toggle input { accent-color: var(--brand-experiment, #5865f2); }
+.p2ps-foot-space { flex: 1; }
 .p2ps-tile-cta {
     position: absolute;
     left: 50%;
@@ -1072,7 +1084,7 @@ function thumbnailOf(source: CaptureSource): string | null {
 
 const isScreen = (s: CaptureSource) => s.id.startsWith("screen:");
 
-export function openSourcePicker(sources: CaptureSource[]): Promise<string | null> {
+export function openSourcePicker(sources: CaptureSource[]): Promise<CaptureChoice | null> {
     return new Promise(resolve => {
         let selected: string | null = null;
         let tab: "screen" | "window" = sources.some(isScreen) ? "screen" : "window";
@@ -1090,6 +1102,11 @@ export function openSourcePicker(sources: CaptureSource[]): Promise<string | nul
                     <div class="p2ps-grid"></div>
                 </div>
                 <div class="p2ps-dialog-foot">
+                    <label class="p2ps-audio-toggle">
+                        <input type="checkbox" data-act="audio">
+                        <span data-act="audio-label"></span>
+                    </label>
+                    <span class="p2ps-foot-space"></span>
                     <button class="p2ps-btn p2ps-btn-secondary" data-act="cancel">Cancelar</button>
                     <button class="p2ps-btn" data-act="ok" disabled>Transmitir</button>
                 </div>
@@ -1098,13 +1115,28 @@ export function openSourcePicker(sources: CaptureSource[]): Promise<string | nul
         const grid = backdrop.querySelector(".p2ps-grid") as HTMLElement;
         const okBtn = backdrop.querySelector('[data-act="ok"]') as HTMLButtonElement;
 
+        const audioCheck = backdrop.querySelector('[data-act="audio"]') as HTMLInputElement;
+        const audioLabel = backdrop.querySelector('[data-act="audio-label"]') as HTMLElement;
+
+        // Sem o componente, o único áudio possível seria o do sistema — que
+        // devolve a própria chamada para quem assiste. Melhor ir sem áudio.
+        const audioAvailable = helperReady() && !nativeAudioBlocked();
+
+        audioCheck.disabled = !audioAvailable;
+        audioCheck.checked = audioAvailable && BdApi.Data.load("P2PShare", "captureAudio") !== false;
+        audioLabel.textContent = audioAvailable
+            ? "Transmitir áudio"
+            : "Áudio indisponível — componente ainda não instalado";
+        audioCheck.addEventListener("change", () =>
+            BdApi.Data.save("P2PShare", "captureAudio", audioCheck.checked));
+
         let settled = false;
         const settle = (id: string | null) => {
             if (settled) return;
             settled = true;
             document.removeEventListener("keydown", onKey);
             backdrop.remove();
-            resolve(id);
+            resolve(id ? { id, audio: audioCheck.checked } : null);
         };
 
         const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") settle(null); };

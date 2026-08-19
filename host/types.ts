@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import type { CaptureSource } from "../capture";
+import type { CaptureChoice, CaptureSource } from "../capture";
 
 /**
  * Tudo que o plugin precisa do client mod hospedeiro.
@@ -108,8 +108,11 @@ export interface Host {
     captureIsolatedAudio(
         sourceId: string
     ): Promise<{ track: MediaStreamTrack; stop: () => void; } | null>;
-    /** Abre o seletor de tela/janela. Resolve com null se o usuário cancelar. */
-    pickSource(sources: CaptureSource[]): Promise<string | null>;
+    /**
+     * Abre o seletor de tela/janela, onde o usuário também decide sobre o
+     * áudio. Resolve com null se cancelar.
+     */
+    pickSource(sources: CaptureSource[]): Promise<CaptureChoice | null>;
 
     mountOverlay(
         sessionId: string,

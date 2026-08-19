@@ -16,6 +16,14 @@ export interface CaptureSource {
     name: string;
 }
 
+/** O que o usuário escolheu na tela de compartilhamento. */
+export interface CaptureChoice {
+    /** Fonte de vídeo: "window:<hwnd>:…" ou "screen:<id>:…". */
+    id: string;
+    /** Transmitir áudio junto. */
+    audio: boolean;
+}
+
 /**
  * Injetável para teste. Em produção fica tudo com o default, que aponta para
  * as APIs reais do browser/Electron.
@@ -24,7 +32,7 @@ export interface CaptureDeps {
     getDisplayMedia?: (constraints: any) => Promise<MediaStream>;
     getUserMedia?: (constraints: any) => Promise<MediaStream>;
     getSources?: () => Promise<CaptureSource[]>;
-    pickSource?: (sources: CaptureSource[]) => Promise<string | null>;
+    pickSource?: (sources: CaptureSource[]) => Promise<CaptureChoice | null>;
     /** Junta trilhas de origens diferentes num stream só. */
     combine?: (tracks: MediaStreamTrack[]) => MediaStream;
 }
@@ -45,8 +53,10 @@ const defaultDeps: Required<CaptureDeps> = {
         });
     },
 
-    // Sem seletor injetado, transmite a primeira fonte (a tela principal).
-    pickSource: async sources => sources[0]?.id ?? null,
+    // Sem seletor injetado, transmite a primeira fonte, sem áudio: mandar o
+    // áudio do sistema devolveria a própria chamada para quem assiste.
+    pickSource: async sources =>
+        sources[0] ? { id: sources[0].id, audio: false } : null,
 
     combine: tracks => new MediaStream(tracks)
 };
@@ -104,9 +114,13 @@ export async function captureScreen(
     }
 
     if (sources.length) {
-        const sourceId = await d.pickSource(sources);
+        const choice = await d.pickSource(sources);
         // Cancelar é decisão do usuário, não falha: não cai para o outro caminho.
-        if (!sourceId) throw new CaptureError("captura cancelada pelo usuário");
+        if (!choice) throw new CaptureError("captura cancelada pelo usuário");
+
+        const sourceId = choice.id;
+        // Quem manda é a escolha da tela de compartilhamento.
+        const withAudio = wantAudio && choice.audio;
 
         const video = {
             mandatory: {
@@ -118,7 +132,7 @@ export async function captureScreen(
 
         // Trilha vinda do auxiliar: só falta o vídeo, e os dois viram um
         // stream só.
-        const isolated = wantAudio && opts.audioForSource
+        const isolated = withAudio && opts.audioForSource
             ? await opts.audioForSource(sourceId)
             : null;
 
@@ -133,7 +147,7 @@ export async function captureScreen(
 
         // Dispositivo escolhido: vídeo e áudio vêm de chamadas separadas e são
         // juntados depois, porque as constraints são incompatíveis entre si.
-        if (wantAudio && opts.audioDeviceId) {
+        if (withAudio && opts.audioDeviceId) {
             const videoOnly = await d.getUserMedia({ audio: false, video })
                 .catch((err: Error) => {
                     throw new CaptureError(`falha ao capturar a fonte: ${err.message}`);
@@ -152,9 +166,9 @@ export async function captureScreen(
             }
         }
 
-        // Áudio do sistema (loopback). No Electron isto exige chromeMediaSource
-        // "desktop" também no áudio — sem esse bloco a transmissão vai muda.
-        if (wantAudio) {
+        // Loopback do sistema: só quando o auxiliar não deu conta e mesmo
+        // assim o usuário pediu áudio.
+        if (withAudio) {
             try {
                 return await d.getUserMedia({
                     audio: { mandatory: { chromeMediaSource: "desktop" } },

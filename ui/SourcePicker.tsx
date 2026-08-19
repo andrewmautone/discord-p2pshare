@@ -9,7 +9,8 @@ import "./sourcePicker.css";
 import type { RenderModalProps } from "@vencord/discord-types";
 import { Button, Forms, Modal, openModal, useState } from "@webpack/common";
 
-import type { CaptureSource } from "../capture";
+import type { CaptureChoice, CaptureSource } from "../capture";
+import { settings } from "../settings";
 
 /**
  * O shape exato do que o DiscordNative devolve varia entre versões: às vezes a
@@ -44,7 +45,7 @@ function isScreen(source: CaptureSource): boolean {
 
 interface PickerProps {
     sources: CaptureSource[];
-    onPick: (id: string | null) => void;
+    onPick: (choice: CaptureChoice | null) => void;
     modalProps: RenderModalProps;
 }
 
@@ -57,7 +58,9 @@ function SourcePicker({ sources, onPick, modalProps }: PickerProps) {
     const shown = sources.filter(s => (tab === "screen" ? isScreen(s) : !isScreen(s)));
 
     const confirm = (id: string | null) => {
-        onPick(id);
+        // O auxiliar de áudio hoje só acompanha a versão BetterDiscord; aqui
+        // resta o loopback do sistema, ligado nas configurações.
+        onPick(id ? { id, audio: settings.store.captureAudio } : null);
         modalProps.onClose();
     };
 
@@ -127,13 +130,13 @@ function SourcePicker({ sources, onPick, modalProps }: PickerProps) {
  * Abre o seletor e resolve com o id escolhido, ou null se cancelar.
  * Encaixa direto no `pickSource` de captureScreen.
  */
-export function openSourcePicker(sources: CaptureSource[]): Promise<string | null> {
+export function openSourcePicker(sources: CaptureSource[]): Promise<CaptureChoice | null> {
     return new Promise(resolve => {
         let settled = false;
-        const settle = (id: string | null) => {
+        const settle = (choice: CaptureChoice | null) => {
             if (settled) return;
             settled = true;
-            resolve(id);
+            resolve(choice);
         };
 
         openModal(

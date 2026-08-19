@@ -140,7 +140,9 @@ function spawnHelper(exe: string, args: string[]): HelperProcess {
         file: exe,
         // argv[0] é o próprio programa, como todo processo espera.
         args: [exe, ...args],
-        cwd: undefined,
+        // Caminho real, nunca undefined: a checagem nativa do Node 24 é
+        // mais estrita e aborta o processo em vez de reclamar.
+        cwd: BdApi.Plugins.folder,
         windowsHide: true,
         windowsVerbatimArguments: false,
         detached: false,
