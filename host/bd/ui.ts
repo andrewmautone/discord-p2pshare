@@ -386,6 +386,7 @@ const CSS = `
        vira clique na pessoa. */
     pointer-events: auto;
     flex-shrink: 0;
+    margin-left: auto;
     align-items: center;
     align-self: center;
     flex: 0 0 auto;
@@ -845,9 +846,11 @@ function applyLiveBadges(): void {
             chip.title = "Transmitindo via P2PShare";
         }
 
-        // À direita, junto dos ícones que o Discord já põe no fim da linha:
-        // dentro do bloco do nome o selo empurra o texto e quebra a linha.
-        const slot = row.querySelector('[class*="icons__"]')
+        // No fim da linha do participante, empurrado para a direita pelo
+        // margin-left auto. O contêiner de ícones parecia o lugar, mas ele só
+        // existe quando a pessoa tem algum ícone — quem não está mudo não tem
+        // nenhum, e o selo sumia.
+        const slot = row.querySelector('[class*="content__"]')
             ?? row.querySelector('[class*="chipletParent"]')
             ?? nameEl?.parentElement;
         slot?.appendChild(chip);

@@ -167,6 +167,72 @@ begin
                    mbConfirmation, MB_YESNO) = IDYES;
 end;
 
+{ Liga o plugin na lista do BetterDiscord.
+
+  Sem isto o instalador termina com o plugin em disco e desligado, e a pessoa
+  precisa descobrir sozinha que falta um passo. O arquivo e' um mapa simples
+  de nome para booleano; mexer nele por texto evita depender de parser. }
+procedure EnableInChannel(const ChannelDir: String);
+var
+  Path, Content, Rest: String;
+  Raw: AnsiString;
+  Brace: Integer;
+begin
+  Path := ChannelDir + '\plugins.json';
+
+  if not FileExists(Path) then
+  begin
+    SaveStringToFile(Path, '{' + #13#10 + '    "P2PShare": true' + #13#10 + '}', False);
+    Exit;
+  end;
+
+  if not LoadStringFromFile(Path, Raw) then Exit;
+  Content := Raw;
+
+  { Ja listado: so garante que esta ligado. }
+  if Pos('"P2PShare"', Content) > 0 then
+  begin
+    StringChangeEx(Content, '"P2PShare": false', '"P2PShare": true', True);
+    StringChangeEx(Content, '"P2PShare":false', '"P2PShare":true', True);
+    SaveStringToFile(Path, Content, False);
+    Exit;
+  end;
+
+  Brace := Pos('{', Content);
+  if Brace = 0 then Exit;
+
+  Rest := Trim(Copy(Content, Brace + 1, Length(Content)));
+
+  { Objeto vazio nao leva virgula, senao o JSON quebra. }
+  if Copy(Rest, 1, 1) = '}' then
+    Content := '{' + #13#10 + '    "P2PShare": true' + #13#10 + '}'
+  else
+    Content := Copy(Content, 1, Brace) + #13#10 + '    "P2PShare": true,' +
+               Copy(Content, Brace + 1, Length(Content));
+
+  SaveStringToFile(Path, Content, False);
+end;
+
+procedure EnablePlugin();
+var
+  Data: String;
+  Channels: array[0..3] of String;
+  I: Integer;
+begin
+  Data := ExpandConstant('{userappdata}\BetterDiscord\data');
+
+  Channels[0] := 'stable';
+  Channels[1] := 'ptb';
+  Channels[2] := 'canary';
+  Channels[3] := 'development';
+
+  { So mexe em canal que ja existe: criar pasta de um canal que a pessoa nao
+    usa nao liga nada e ainda suja o perfil dela. }
+  for I := 0 to 3 do
+    if DirExists(Data + '\' + Channels[I]) then
+      EnableInChannel(Data + '\' + Channels[I]);
+end;
+
 function BetterDiscordPresent(): Boolean;
 begin
   Result := DirExists(ExpandConstant('{userappdata}\BetterDiscord'));
@@ -361,21 +427,22 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    EnablePlugin();
+
     if InstalledVer <> '' then
     begin
       MsgBox('P2PShare atualizado: ' + InstalledVer + ' -> ' + '{#AppVersion}' + '.' + #13#10 + #13#10 +
-             'O componente de audio tambem foi atualizado.' + #13#10 + #13#10 +
-             'O BetterDiscord recarrega o plugin sozinho. Se nao recarregar, ' +
-             'desligue e ligue o P2PShare em Configuracoes > Plugins.',
+             'O componente de audio tambem foi atualizado, e o plugin segue ' +
+             'ligado.' + #13#10 + #13#10 +
+             'O BetterDiscord recarrega sozinho. Se nao recarregar, reinicie ' +
+             'o Discord.',
              mbInformation, MB_OK);
       Exit;
     end;
 
-    MsgBox('Plugin instalado.' + #13#10 + #13#10 +
-           'Falta so ligar ele:' + #13#10 +
-           '  1. Reinicie o Discord (feche pela bandeja do sistema tambem)' + #13#10 +
-           '  2. Configuracoes > BetterDiscord > Plugins' + #13#10 +
-           '  3. Ligue o P2PShare' + #13#10 + #13#10 +
+    MsgBox('Plugin instalado e ligado.' + #13#10 + #13#10 +
+           'Reinicie o Discord (feche pela bandeja do sistema tambem) e ' +
+           'ele ja sobe funcionando.' + #13#10 + #13#10 +
            'Para usar: entre num canal de voz e clique no botao de tela.' + #13#10 +
            'O componente de audio ja foi instalado junto: da para transmitir ' +
            'o som sem devolver a chamada de voz para quem assiste.',

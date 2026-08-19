@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.13.1
+ * @version 1.14.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.13.1";
+var PLUGIN_VERSION = "1.14.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "3b71f2742c6e92b0dd9621a332a55ce0dc51b19ded802c9bfa548de9e476b3cf";
@@ -1085,6 +1085,7 @@ var CSS = `
        vira clique na pessoa. */
     pointer-events: auto;
     flex-shrink: 0;
+    margin-left: auto;
     align-items: center;
     align-self: center;
     flex: 0 0 auto;
@@ -1389,7 +1390,7 @@ function applyLiveBadges() {
     } else {
       chip.title = "Transmitindo via P2PShare";
     }
-    const slot = row.querySelector('[class*="icons__"]') ?? row.querySelector('[class*="chipletParent"]') ?? nameEl?.parentElement;
+    const slot = row.querySelector('[class*="content__"]') ?? row.querySelector('[class*="chipletParent"]') ?? nameEl?.parentElement;
     slot?.appendChild(chip);
   }
 }
