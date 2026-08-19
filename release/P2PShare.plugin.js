@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.12.1
+ * @version 1.13.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.12.1";
+var PLUGIN_VERSION = "1.13.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "3b71f2742c6e92b0dd9621a332a55ce0dc51b19ded802c9bfa548de9e476b3cf";
@@ -1212,6 +1212,7 @@ function collectSites() {
     sites.push({
       host: anchor,
       style: anchor,
+      container: peer.parentElement ?? peer,
       place: (btn) => {
         const wrapper = document.createElement("div");
         wrapper.className = peer.className;
@@ -1227,6 +1228,7 @@ function collectSites() {
     sites.push({
       host: row,
       style: sibling,
+      container: row,
       place: (btn) => row.appendChild(btn)
     });
   }
@@ -1258,8 +1260,15 @@ function mountVoiceButton(opts) {
         voiceBtns.delete(host2);
       }
     }
+    for (const btn of document.querySelectorAll(".p2ps-voice-btn")) {
+      const parent = btn.parentElement;
+      if (!parent) continue;
+      const ours = parent.querySelectorAll(".p2ps-voice-btn");
+      for (let i = 1; i < ours.length; i++) ours[i].remove();
+    }
     for (const site of collectSites()) {
       if (voiceBtns.has(site.host)) continue;
+      if (site.container.querySelector(".p2ps-voice-btn")) continue;
       const btn = document.createElement("button");
       btn.className = `${site.style.className} p2ps-voice-btn`;
       btn.type = "button";

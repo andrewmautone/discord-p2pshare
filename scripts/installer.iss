@@ -53,6 +53,9 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 
 [Files]
 Source: "..\release\P2PShare.plugin.js"; DestDir: "{userappdata}\BetterDiscord\plugins"; Flags: ignoreversion
+; O componente de audio vai junto: assim quem instala por aqui nao depende de
+; download nenhum, e o plugin ja' encontra tudo pronto na primeira transmissao.
+Source: "..\release\p2pshare-audio.exe";  DestDir: "{userappdata}\BetterDiscord\plugins"; Flags: ignoreversion
 Source: "..\release\LEIA-ME.txt";        DestDir: "{userappdata}\BetterDiscord\P2PShare"; Flags: ignoreversion
 
 [Messages]
@@ -372,8 +375,9 @@ begin
            '  1. Reinicie o Discord (feche pela bandeja do sistema tambem)' + #13#10 +
            '  2. Configuracoes > BetterDiscord > Plugins' + #13#10 +
            '  3. Ligue o P2PShare' + #13#10 + #13#10 +
-           'Para usar: entre num canal de voz e clique no botao flutuante ' +
-           'de tela.',
+           'Para usar: entre num canal de voz e clique no botao de tela.' + #13#10 +
+           'O componente de audio ja foi instalado junto: da para transmitir ' +
+           'o som sem devolver a chamada de voz para quem assiste.',
            mbInformation, MB_OK);
   end;
 end;

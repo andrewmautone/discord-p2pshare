@@ -3,12 +3,18 @@ P2PShare - compartilhamento de tela ponto-a-ponto no Discord
 
 INSTALAR  (leva 1 minuto, sem executavel nenhum)
 
-  Se voce ja usa BetterDiscord:
+  Pelo instalador (P2PShare-Setup.exe): ele coloca o plugin e o
+  componente de audio no lugar certo, e nao precisa de mais nada.
+
+  Se voce ja usa BetterDiscord e prefere na mao:
 
     1. No Discord: Configuracoes > BetterDiscord > Plugins
     2. Clique no botao "Open Plugins Folder" no topo da pagina
     3. Arraste o arquivo P2PShare.plugin.js para dentro da pasta
     4. Volte pro Discord e ligue o toggle do P2PShare
+
+    O componente de audio (p2pshare-audio.exe) o plugin baixa sozinho na
+    primeira vez. Se preferir, arraste ele para a mesma pasta.
 
     Pronto. Nao precisa reiniciar.
 

@@ -563,6 +563,14 @@ interface Site {
     host: HTMLElement;
     /** De quem copiar as classes para o botao parecer nativo. */
     style: HTMLElement;
+    /**
+     * Onde o botao vai ficar.
+     *
+     * Serve para nao injetar duas vezes na mesma barra: os seletores do
+     * Discord casam com elementos aninhados, e sem isto o mesmo lugar ganha
+     * um botao pelo filho e outro pelo pai.
+     */
+    container: HTMLElement;
     place(btn: HTMLElement): void;
 }
 
@@ -600,6 +608,7 @@ function collectSites(): Site[] {
         sites.push({
             host: anchor,
             style: anchor,
+            container: peer.parentElement ?? peer,
             place: btn => {
                 const wrapper = document.createElement("div");
                 wrapper.className = peer.className;
@@ -618,6 +627,7 @@ function collectSites(): Site[] {
         sites.push({
             host: row,
             style: sibling,
+            container: row,
             place: btn => row.appendChild(btn)
         });
     }
@@ -661,8 +671,21 @@ export function mountVoiceButton(opts: {
             }
         }
 
+        // Sobras de re-render: mais de um botao nosso no mesmo lugar.
+        for (const btn of document.querySelectorAll<HTMLElement>(".p2ps-voice-btn")) {
+            const parent = btn.parentElement;
+            if (!parent) continue;
+
+            const ours = parent.querySelectorAll(".p2ps-voice-btn");
+            for (let i = 1; i < ours.length; i++) ours[i].remove();
+        }
+
         for (const site of collectSites()) {
             if (voiceBtns.has(site.host)) continue;
+
+            // Este lugar ja' tem um botao nosso, posto por outro seletor que
+            // casou com um elemento aninhado.
+            if (site.container.querySelector(".p2ps-voice-btn")) continue;
 
             const btn = document.createElement("button");
             // Herda as classes do vizinho: nasce com o visual do Discord.
