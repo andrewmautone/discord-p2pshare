@@ -1,0 +1,58 @@
+.p2ps-picker-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.p2ps-picker-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+    padding-bottom: 8px;
+}
+
+.p2ps-picker-card {
+    border: 2px solid transparent;
+    border-radius: 8px;
+    padding: 6px;
+    cursor: pointer;
+    background: var(--background-secondary, #2f3136);
+}
+
+.p2ps-picker-card:hover {
+    background: var(--background-modifier-hover, #3a3c43);
+}
+
+.p2ps-picker-card-selected {
+    border-color: var(--brand-experiment, #5865f2);
+}
+
+.p2ps-picker-thumb {
+    aspect-ratio: 16 / 9;
+    background: #000;
+    border-radius: 4px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.p2ps-picker-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.p2ps-picker-noimg {
+    color: var(--text-muted, #72767d);
+    font-size: 12px;
+}
+
+.p2ps-picker-name {
+    margin-top: 6px;
+    font-size: 13px;
+    color: var(--header-primary, #fff);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

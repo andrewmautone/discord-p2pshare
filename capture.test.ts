@@ -10,66 +10,77 @@ import { describe, it } from "node:test";
 import { CaptureError, captureScreen } from "./capture";
 
 const fakeStream = { id: "fake" } as unknown as MediaStream;
+const twoSources = [
+    { id: "screen:0", name: "Tela 1" },
+    { id: "window:12", name: "Visual Studio Code" }
+];
 
 describe("captureScreen", () => {
-    it("usa getDisplayMedia quando disponível", async () => {
+    it("prefere as fontes nativas, para poder mostrar o seletor", async () => {
+        let offered: unknown;
+        let usedConstraints: any;
+
         const stream = await captureScreen({
+            getSources: async () => twoSources,
+            pickSource: async sources => { offered = sources; return "window:12"; },
+            getUserMedia: async c => { usedConstraints = c; return fakeStream; },
+            getDisplayMedia: async () => { throw new Error("não deveria ser chamado"); }
+        });
+
+        assert.equal(stream, fakeStream);
+        assert.deepEqual(offered, twoSources, "o seletor recebe todas as fontes");
+        assert.equal(usedConstraints.video.mandatory.chromeMediaSource, "desktop");
+        assert.equal(usedConstraints.video.mandatory.chromeMediaSourceId, "window:12");
+    });
+
+    it("cai para getDisplayMedia quando não há API nativa", async () => {
+        const stream = await captureScreen({
+            getSources: async () => { throw new Error("sem DiscordNative"); },
             getDisplayMedia: async () => fakeStream
         });
+
         assert.equal(stream, fakeStream);
     });
 
-    it("cai para getUserMedia quando getDisplayMedia falha", async () => {
-        let usedConstraints: any;
+    it("cai para getDisplayMedia quando a lista de fontes vem vazia", async () => {
         const stream = await captureScreen({
-            getDisplayMedia: async () => { throw new Error("não suportado"); },
-            getSources: async () => [{ id: "screen:0", name: "Tela 1" }],
-            pickSource: async sources => sources[0].id,
-            getUserMedia: async c => { usedConstraints = c; return fakeStream; }
+            getSources: async () => [],
+            getDisplayMedia: async () => fakeStream
         });
 
         assert.equal(stream, fakeStream);
-        assert.equal(usedConstraints.video.mandatory.chromeMediaSource, "desktop");
-        assert.equal(usedConstraints.video.mandatory.chromeMediaSourceId, "screen:0");
     });
 
-    it("lança CaptureError quando o usuário cancela a escolha da fonte", async () => {
+    it("cancelar no seletor aborta, sem cair para getDisplayMedia", async () => {
+        let displayMediaCalled = false;
+
         await assert.rejects(
             () => captureScreen({
-                getDisplayMedia: async () => { throw new Error("não suportado"); },
-                getSources: async () => [{ id: "screen:0", name: "Tela 1" }],
+                getSources: async () => twoSources,
                 pickSource: async () => null,
-                getUserMedia: async () => fakeStream
+                getUserMedia: async () => fakeStream,
+                getDisplayMedia: async () => { displayMediaCalled = true; return fakeStream; }
             }),
             (err: Error) => err instanceof CaptureError && /cancel/i.test(err.message)
         );
+
+        assert.equal(displayMediaCalled, false, "cancelar é decisão do usuário, não falha");
     });
 
-    it("lança CaptureError quando nenhuma API funciona", async () => {
+    it("lança CaptureError quando nenhuma das duas APIs funciona", async () => {
         await assert.rejects(
             () => captureScreen({
-                getDisplayMedia: async () => { throw new Error("não suportado"); },
-                getSources: async () => { throw new Error("sem DiscordNative"); }
+                getSources: async () => { throw new Error("sem DiscordNative"); },
+                getDisplayMedia: async () => { throw new Error("não suportado"); }
             }),
             (err: Error) => err instanceof CaptureError
-        );
-    });
-
-    it("lança CaptureError quando não há nenhuma fonte", async () => {
-        await assert.rejects(
-            () => captureScreen({
-                getDisplayMedia: async () => { throw new Error("não suportado"); },
-                getSources: async () => []
-            }),
-            (err: Error) => err instanceof CaptureError && /fonte/i.test(err.message)
         );
     });
 
     it("lança CaptureError quando getUserMedia falha na fonte escolhida", async () => {
         await assert.rejects(
             () => captureScreen({
-                getDisplayMedia: async () => { throw new Error("não suportado"); },
-                getSources: async () => [{ id: "screen:0", name: "Tela 1" }],
+                getSources: async () => twoSources,
                 pickSource: async () => "screen:0",
                 getUserMedia: async () => { throw new Error("permissão negada"); }
             }),

@@ -36,23 +36,55 @@ const defaultDeps: Required<CaptureDeps> = {
         if (!native?.getDesktopCaptureSources) {
             throw new Error("DiscordNative.desktopCapture indisponível");
         }
-        return native.getDesktopCaptureSources({ types: ["screen", "window"] });
+
+        return native.getDesktopCaptureSources({
+            types: ["screen", "window"],
+            thumbnailSize: { width: 320, height: 180 }
+        });
     },
 
-    // Sem picker próprio: transmite a primeira fonte, que é a tela principal.
+    // Sem seletor injetado, transmite a primeira fonte (a tela principal).
     pickSource: async sources => sources[0]?.id ?? null
 };
 
 /**
- * Obtém o stream da tela tentando, em ordem:
- *   1. navigator.mediaDevices.getDisplayMedia
- *   2. DiscordNative.desktopCapture + getUserMedia com chromeMediaSource
+ * Obtém o stream da tela.
  *
- * Não dá para saber de antemão qual das duas o Electron do Discord expõe,
- * então a primeira que funcionar vence.
+ * Tenta primeiro o DiscordNative, porque ele devolve a lista de telas e
+ * janelas — é o que permite mostrar nosso próprio seletor com miniaturas.
+ * Só quando ele não existe é que caímos no getDisplayMedia, que abre o
+ * seletor nativo do Chromium e não nos dá escolha sobre a UI.
  */
 export async function captureScreen(deps: CaptureDeps = {}): Promise<MediaStream> {
     const d = { ...defaultDeps, ...deps };
+
+    let sources: CaptureSource[] = [];
+    try {
+        sources = await d.getSources();
+    } catch (err) {
+        console.warn("[P2PShare] DiscordNative indisponível, tentando getDisplayMedia", err);
+    }
+
+    if (sources.length) {
+        const sourceId = await d.pickSource(sources);
+        // Cancelar é decisão do usuário, não falha: não cai para o outro caminho.
+        if (!sourceId) throw new CaptureError("captura cancelada pelo usuário");
+
+        try {
+            return await d.getUserMedia({
+                audio: false,
+                video: {
+                    mandatory: {
+                        chromeMediaSource: "desktop",
+                        chromeMediaSourceId: sourceId,
+                        maxFrameRate: 60
+                    }
+                }
+            });
+        } catch (err) {
+            throw new CaptureError(`falha ao capturar a fonte: ${(err as Error).message}`);
+        }
+    }
 
     try {
         return await d.getDisplayMedia({
@@ -60,35 +92,8 @@ export async function captureScreen(deps: CaptureDeps = {}): Promise<MediaStream
             audio: true
         });
     } catch (err) {
-        console.warn("[P2PShare] getDisplayMedia indisponível, tentando DiscordNative", err);
-    }
-
-    let sources: CaptureSource[];
-    try {
-        sources = await d.getSources();
-    } catch (err) {
         throw new CaptureError(
             `nenhuma API de captura de tela disponível: ${(err as Error).message}`
         );
-    }
-
-    if (!sources.length) throw new CaptureError("nenhuma fonte de captura encontrada");
-
-    const sourceId = await d.pickSource(sources);
-    if (!sourceId) throw new CaptureError("captura cancelada pelo usuário");
-
-    try {
-        return await d.getUserMedia({
-            audio: false,
-            video: {
-                mandatory: {
-                    chromeMediaSource: "desktop",
-                    chromeMediaSourceId: sourceId,
-                    maxFrameRate: 60
-                }
-            }
-        });
-    } catch (err) {
-        throw new CaptureError(`falha ao capturar a fonte: ${(err as Error).message}`);
     }
 }

@@ -12,6 +12,7 @@ import { getCurrentUsername, getVoiceChannelId } from "./discord/api";
 import { settings } from "./index";
 import { BroadcastPeers, type PeerTransport } from "./peers";
 import { observeSignals, postBeacon, removeBeacon, sendHandshake } from "./signaling";
+import { openSourcePicker } from "./ui/SourcePicker";
 
 interface Session {
     sessionId: string;
@@ -71,7 +72,7 @@ export async function startBroadcast(): Promise<void> {
 
     let stream: MediaStream;
     try {
-        stream = await captureScreen();
+        stream = await captureScreen({ pickSource: openSourcePicker });
     } catch (err) {
         toast(
             err instanceof CaptureError

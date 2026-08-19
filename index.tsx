@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { addChatBarButton, removeChatBarButton } from "@api/ChatButtons";
 import { ApplicationCommandInputType, sendBotMessage } from "@api/Commands";
 import { addMessageAccessory, removeMessageAccessory } from "@api/MessageAccessories";
 import { definePluginSettings } from "@api/Settings";
@@ -12,6 +13,7 @@ import definePlugin, { OptionType } from "@utils/types";
 import { isBroadcasting, startBroadcast, stopBroadcast } from "./broadcast";
 import { DEFAULT_BUDGET_MBPS } from "./constants";
 import { BeaconAccessory } from "./ui/BeaconAccessory";
+import { P2PShareChatButton, P2PShareIcon } from "./ui/ChatBarToggle";
 import { initWatcher } from "./watch";
 
 export const settings = definePluginSettings({
@@ -53,9 +55,11 @@ export default definePlugin({
     start() {
         cleanupWatcher = initWatcher();
         addMessageAccessory("p2pshare", props => <BeaconAccessory message={props.message} />);
+        addChatBarButton("p2pshare", P2PShareChatButton, P2PShareIcon);
     },
 
     stop() {
+        removeChatBarButton("p2pshare");
         removeMessageAccessory("p2pshare");
         void stopBroadcast();
         cleanupWatcher?.();
