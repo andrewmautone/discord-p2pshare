@@ -1,3 +1,7 @@
 node_modules/
 *.log
-release/
+
+# Saída de build. O .plugin.js é a exceção: o auto-update busca ele por raw,
+# então precisa estar versionado. O instalador (2 MB) vai para Releases.
+release/*
+!release/P2PShare.plugin.js
