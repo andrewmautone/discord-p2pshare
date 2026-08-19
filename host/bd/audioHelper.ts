@@ -44,9 +44,78 @@ export interface HelperProcess {
     kill(): void;
 }
 
+/**
+ * Marca uma tentativa de iniciar o auxiliar em andamento.
+ *
+ * Iniciar processo por ligação de baixo nível pode derrubar o renderer — e um
+ * renderer que morre não executa nenhum `catch`. O arquivo fica em disco
+ * durante a tentativa e some quando ela dá certo; encontrá-lo na abertura
+ * seguinte significa que o Discord caiu no meio, e aí o caminho nativo é
+ * desligado em vez de derrubar tudo de novo.
+ */
+function attemptMarkerPath(): string {
+    return require("path").join(BdApi.Plugins.folder, ".p2pshare-audio-attempt");
+}
+
+let nativeBlocked = false;
+
+/** O auxiliar derrubou o Discord na última tentativa? */
+export function nativeAudioBlocked(): boolean {
+    return nativeBlocked;
+}
+
+/** Libera o caminho nativo de novo, a pedido do usuário. */
+export function unblockNativeAudio(): void {
+    nativeBlocked = false;
+    try {
+        const fs = require("fs");
+        if (fs.existsSync(attemptMarkerPath())) fs.unlinkSync(attemptMarkerPath());
+    } catch { /* nada a fazer */ }
+}
+
+/**
+ * Verifica, na abertura, se a tentativa anterior terminou em queda.
+ */
+export function checkPreviousCrash(): void {
+    try {
+        const fs = require("fs");
+        if (!fs.existsSync(attemptMarkerPath())) return;
+
+        fs.unlinkSync(attemptMarkerPath());
+        nativeBlocked = true;
+        lastError =
+            "a tentativa anterior derrubou o Discord; o áudio isolado ficou " +
+            "desligado por segurança";
+        console.warn("[P2PShare] " + lastError);
+    } catch { /* sem marcador legível, segue em frente */ }
+}
+
 function spawnHelper(exe: string, args: string[]): HelperProcess {
-    const { Process } = (process as any).binding("process_wrap");
-    const pipeWrap = (process as any).binding("pipe_wrap");
+    if (nativeBlocked) {
+        throw new Error("caminho nativo desligado depois de uma queda anterior");
+    }
+
+    const wrap = (process as any).binding;
+    if (typeof wrap !== "function") {
+        throw new Error("este cliente não expõe as ligações necessárias");
+    }
+
+    const { Process } = wrap("process_wrap");
+    const pipeWrap = wrap("pipe_wrap");
+
+    if (typeof Process !== "function" || typeof pipeWrap?.Pipe !== "function") {
+        throw new Error("as ligações de processo não têm o formato esperado");
+    }
+
+    const fs = require("fs");
+    fs.writeFileSync(attemptMarkerPath(), new Date().toISOString(), "utf8");
+
+    /** Tentativa concluída sem queda: o marcador pode sair. */
+    const clearMarker = () => {
+        try {
+            if (fs.existsSync(attemptMarkerPath())) fs.unlinkSync(attemptMarkerPath());
+        } catch { /* nada a fazer */ }
+    };
 
     const stdout = new pipeWrap.Pipe(pipeWrap.constants.SOCKET);
     const child = new Process();
@@ -83,9 +152,16 @@ function spawnHelper(exe: string, args: string[]): HelperProcess {
         ]
     });
 
-    if (code !== 0) throw new Error(`não deu para iniciar o componente (código ${code})`);
+    if (code !== 0) {
+        clearMarker();
+        throw new Error(`não deu para iniciar o componente (código ${code})`);
+    }
 
     stdout.readStart();
+
+    // Sobreviveu ao spawn e à primeira leitura: a queda, se viesse, já teria
+    // vindo. Deixar o marcador depois disso bloquearia o recurso à toa.
+    setTimeout(clearMarker, 1500);
 
     return {
         onData: handler => { onData = handler; },

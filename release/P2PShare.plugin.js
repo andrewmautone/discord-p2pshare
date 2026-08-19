@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.11.0
+ * @version 1.11.1
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -126,7 +126,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.11.0";
+var PLUGIN_VERSION = "1.11.1";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "3b71f2742c6e92b0dd9621a332a55ce0dc51b19ded802c9bfa548de9e476b3cf";
@@ -371,9 +371,53 @@ function onMessageDelete(handler) {
 }
 
 // host/bd/audioHelper.ts
+function attemptMarkerPath() {
+  return require("path").join(BdApi.Plugins.folder, ".p2pshare-audio-attempt");
+}
+var nativeBlocked = false;
+function nativeAudioBlocked() {
+  return nativeBlocked;
+}
+function unblockNativeAudio() {
+  nativeBlocked = false;
+  try {
+    const fs = require("fs");
+    if (fs.existsSync(attemptMarkerPath())) fs.unlinkSync(attemptMarkerPath());
+  } catch {
+  }
+}
+function checkPreviousCrash() {
+  try {
+    const fs = require("fs");
+    if (!fs.existsSync(attemptMarkerPath())) return;
+    fs.unlinkSync(attemptMarkerPath());
+    nativeBlocked = true;
+    lastError = "a tentativa anterior derrubou o Discord; o \xE1udio isolado ficou desligado por seguran\xE7a";
+    console.warn("[P2PShare] " + lastError);
+  } catch {
+  }
+}
 function spawnHelper(exe, args) {
-  const { Process } = process.binding("process_wrap");
-  const pipeWrap = process.binding("pipe_wrap");
+  if (nativeBlocked) {
+    throw new Error("caminho nativo desligado depois de uma queda anterior");
+  }
+  const wrap = process.binding;
+  if (typeof wrap !== "function") {
+    throw new Error("este cliente n\xE3o exp\xF5e as liga\xE7\xF5es necess\xE1rias");
+  }
+  const { Process } = wrap("process_wrap");
+  const pipeWrap = wrap("pipe_wrap");
+  if (typeof Process !== "function" || typeof pipeWrap?.Pipe !== "function") {
+    throw new Error("as liga\xE7\xF5es de processo n\xE3o t\xEAm o formato esperado");
+  }
+  const fs = require("fs");
+  fs.writeFileSync(attemptMarkerPath(), (/* @__PURE__ */ new Date()).toISOString(), "utf8");
+  const clearMarker = () => {
+    try {
+      if (fs.existsSync(attemptMarkerPath())) fs.unlinkSync(attemptMarkerPath());
+    } catch {
+    }
+  };
   const stdout = new pipeWrap.Pipe(pipeWrap.constants.SOCKET);
   const child = new Process();
   let onData = () => {
@@ -404,8 +448,12 @@ function spawnHelper(exe, args) {
       { type: "ignore" }
     ]
   });
-  if (code !== 0) throw new Error(`n\xE3o deu para iniciar o componente (c\xF3digo ${code})`);
+  if (code !== 0) {
+    clearMarker();
+    throw new Error(`n\xE3o deu para iniciar o componente (c\xF3digo ${code})`);
+  }
   stdout.readStart();
+  setTimeout(clearMarker, 1500);
   return {
     onData: (handler) => {
       onData = handler;
@@ -2637,6 +2685,7 @@ var P2PShare = class {
       refreshLive();
     });
     this.cleanupUpdater = startUpdateChecks();
+    checkPreviousCrash();
     void syncHelper();
     setTimeout(() => ui_exports.dumpVoiceDiagnostics(), 8e3);
   }
@@ -2716,14 +2765,17 @@ var P2PShare = class {
     const paintHelper = () => {
       const ready = helperReady();
       const err = helperError();
-      helperStatus.textContent = ready ? "Componente de \xE1udio instalado." : err ? `N\xE3o deu para instalar: ${err}` : "Instalando o componente de \xE1udio\u2026";
+      const blocked = nativeAudioBlocked();
+      helperStatus.textContent = blocked ? "Desligado por seguran\xE7a: a \xFAltima tentativa derrubou o Discord." : ready ? "Componente de \xE1udio instalado." : err ? `N\xE3o deu para instalar: ${err}` : "Instalando o componente de \xE1udio\u2026";
       helperStatus.style.color = ready ? "var(--text-positive, #23a55a)" : "var(--text-muted, #72767d)";
-      helperBtn.textContent = ready ? "Desinstalar" : "Tentar de novo";
-      helperBtn.style.background = ready ? "var(--status-danger, #ed4245)" : "var(--brand-experiment, #5865f2)";
+      helperBtn.textContent = blocked ? "Ligar de novo" : ready ? "Desinstalar" : "Tentar de novo";
+      helperBtn.style.background = ready && !blocked ? "var(--status-danger, #ed4245)" : "var(--brand-experiment, #5865f2)";
     };
     helperBtn.addEventListener("click", async () => {
       helperBtn.disabled = true;
-      if (helperReady()) {
+      if (nativeAudioBlocked()) {
+        unblockNativeAudio();
+      } else if (helperReady()) {
         removeHelper();
       } else {
         helperBtn.textContent = "Baixando\u2026";
