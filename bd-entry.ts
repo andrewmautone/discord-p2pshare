@@ -23,9 +23,15 @@ export default class P2PShare {
     private cleanupWatcher: (() => void) | null = null;
     private cleanupState: (() => void) | null = null;
     private cleanupUpdater: (() => void) | null = null;
+    private cleanupVoiceBtn: (() => void) | null = null;
 
     start(): void {
         ui.injectStyles();
+
+        const toggle = () => {
+            if (getBroadcastState().active) void stopBroadcast();
+            else void startBroadcast();
+        };
 
         this.cleanupWatcher = initWatcher();
 
@@ -34,17 +40,25 @@ export default class P2PShare {
                 x: loadSetting("launcherX", window.innerWidth - 80),
                 y: loadSetting("launcherY", window.innerHeight - 160)
             },
-            onToggle: () => {
-                if (getBroadcastState().active) void stopBroadcast();
-                else void startBroadcast();
-            },
+            onToggle: toggle,
             onMoved: pos => {
                 saveSetting("launcherX", pos.x);
                 saveSetting("launcherY", pos.y);
             }
         });
 
-        this.cleanupState = onBroadcastStateChange(ui.updateLauncher);
+        // Botao no painel de voz do Discord, ao lado do de tela nativo.
+        // O flutuante fica como reserva: se o Discord mudar o HTML e a injecao
+        // parar de achar onde encaixar, ele reaparece sozinho.
+        this.cleanupVoiceBtn = ui.mountVoiceButton({
+            onToggle: toggle,
+            onAnchorChange: found => ui.setLauncherHidden(found)
+        });
+
+        this.cleanupState = onBroadcastStateChange(state => {
+            ui.updateLauncher(state);
+            ui.updateVoiceButton(state);
+        });
 
         // Não bloqueia o start: se o host estiver fora do ar, o plugin sobe igual.
         this.cleanupUpdater = startUpdateChecks();
@@ -55,6 +69,9 @@ export default class P2PShare {
 
         this.cleanupState?.();
         this.cleanupState = null;
+
+        this.cleanupVoiceBtn?.();
+        this.cleanupVoiceBtn = null;
 
         this.cleanupUpdater?.();
         this.cleanupUpdater = null;

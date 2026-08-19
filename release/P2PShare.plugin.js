@@ -348,14 +348,17 @@ __export(ui_exports, {
   injectStyles: () => injectStyles,
   mountLauncher: () => mountLauncher,
   mountOverlay: () => mountOverlay,
+  mountVoiceButton: () => mountVoiceButton,
   openSourcePicker: () => openSourcePicker,
   removeStyles: () => removeStyles,
   revokeBeacon: () => revokeBeacon,
+  setLauncherHidden: () => setLauncherHidden,
   setOverlayViewers: () => setOverlayViewers,
   unmountAllOverlays: () => unmountAllOverlays,
   unmountLauncher: () => unmountLauncher,
   unmountOverlay: () => unmountOverlay,
-  updateLauncher: () => updateLauncher
+  updateLauncher: () => updateLauncher,
+  updateVoiceButton: () => updateVoiceButton
 });
 var CSS = `
 .p2ps-launcher {
@@ -548,6 +551,22 @@ var CSS = `
     padding: 2px 9px;
 }
 .p2ps-overlay-bar button:disabled { opacity: .4; cursor: default; }
+.p2ps-voice-btn { position: relative; }
+.p2ps-voice-count {
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    background: var(--status-danger, #ed4245);
+    color: #fff;
+    border-radius: 8px;
+    font-size: 10px;
+    line-height: 14px;
+    min-width: 14px;
+    text-align: center;
+    padding: 0 3px;
+    pointer-events: none;
+}
+.p2ps-launcher-hidden { display: none; }
 .p2ps-overlay-bar button {
     background: none;
     border: none;
@@ -627,11 +646,102 @@ function updateLauncher(state) {
     launcher.appendChild(badge);
   }
 }
+function setLauncherHidden(hidden) {
+  launcher?.classList.toggle("p2ps-launcher-hidden", hidden);
+}
 function unmountLauncher() {
   if (!launcher) return;
   launcher.__p2psCleanupDrag?.();
   launcher.remove();
   launcher = null;
+}
+var voiceBtn = null;
+var voiceObserver = null;
+var lastState = { active: false, viewers: 0 };
+function findShareButton() {
+  const isOurs = (el) => !!el?.classList.contains("p2ps-voice-btn");
+  for (const path of document.querySelectorAll('button svg path[d^="M2 4.5C2 3.397"]')) {
+    const btn = path.closest("button");
+    if (btn && !isOurs(btn)) return btn;
+  }
+  for (const btn of document.querySelectorAll("button[aria-label]")) {
+    if (isOurs(btn)) continue;
+    const label = (btn.getAttribute("aria-label") || "").toLowerCase();
+    if (label.includes("tela") || label.includes("screen") || label.includes("share")) {
+      return btn;
+    }
+  }
+  return null;
+}
+function paintVoiceButton() {
+  if (!voiceBtn) return;
+  const svg = voiceBtn.querySelector("svg");
+  if (svg) {
+    svg.style.color = lastState.active ? "var(--status-danger, #ed4245)" : "";
+  }
+  voiceBtn.setAttribute(
+    "aria-label",
+    lastState.active ? `Parar transmiss\xE3o P2P \u2014 ${lastState.viewers} assistindo` : "Transmitir tela via P2P"
+  );
+  voiceBtn.title = voiceBtn.getAttribute("aria-label") || "";
+  voiceBtn.querySelector(".p2ps-voice-count")?.remove();
+  if (lastState.active && lastState.viewers > 0) {
+    const badge = document.createElement("span");
+    badge.className = "p2ps-voice-count";
+    badge.textContent = String(lastState.viewers);
+    voiceBtn.appendChild(badge);
+  }
+}
+function mountVoiceButton(opts) {
+  const sync = () => {
+    const anchor = findShareButton();
+    if (!anchor) {
+      voiceBtn?.remove();
+      voiceBtn = null;
+      opts.onAnchorChange(false);
+      return;
+    }
+    if (voiceBtn && voiceBtn.isConnected && voiceBtn.previousElementSibling === anchor) {
+      opts.onAnchorChange(true);
+      return;
+    }
+    voiceBtn?.remove();
+    const btn = document.createElement("button");
+    btn.className = `${anchor.className} p2ps-voice-btn`;
+    btn.type = "button";
+    btn.innerHTML = SCREENSHARE_SVG;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      opts.onToggle();
+    });
+    anchor.insertAdjacentElement("afterend", btn);
+    voiceBtn = btn;
+    paintVoiceButton();
+    opts.onAnchorChange(true);
+  };
+  sync();
+  let queued = false;
+  const schedule = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      sync();
+    });
+  };
+  voiceObserver = new MutationObserver(schedule);
+  voiceObserver.observe(document.body, { childList: true, subtree: true });
+  return () => {
+    voiceObserver?.disconnect();
+    voiceObserver = null;
+    voiceBtn?.remove();
+    voiceBtn = null;
+  };
+}
+function updateVoiceButton(state) {
+  lastState = state;
+  paintVoiceButton();
 }
 function thumbnailOf(source) {
   const raw = source;
@@ -1495,30 +1605,41 @@ var P2PShare = class {
   cleanupWatcher = null;
   cleanupState = null;
   cleanupUpdater = null;
+  cleanupVoiceBtn = null;
   start() {
     ui_exports.injectStyles();
+    const toggle = () => {
+      if (getBroadcastState().active) void stopBroadcast();
+      else void startBroadcast();
+    };
     this.cleanupWatcher = initWatcher();
     ui_exports.mountLauncher({
       position: {
         x: loadSetting("launcherX", window.innerWidth - 80),
         y: loadSetting("launcherY", window.innerHeight - 160)
       },
-      onToggle: () => {
-        if (getBroadcastState().active) void stopBroadcast();
-        else void startBroadcast();
-      },
+      onToggle: toggle,
       onMoved: (pos) => {
         saveSetting("launcherX", pos.x);
         saveSetting("launcherY", pos.y);
       }
     });
-    this.cleanupState = onBroadcastStateChange(ui_exports.updateLauncher);
+    this.cleanupVoiceBtn = ui_exports.mountVoiceButton({
+      onToggle: toggle,
+      onAnchorChange: (found) => ui_exports.setLauncherHidden(found)
+    });
+    this.cleanupState = onBroadcastStateChange((state) => {
+      ui_exports.updateLauncher(state);
+      ui_exports.updateVoiceButton(state);
+    });
     this.cleanupUpdater = startUpdateChecks();
   }
   stop() {
     void stopBroadcast();
     this.cleanupState?.();
     this.cleanupState = null;
+    this.cleanupVoiceBtn?.();
+    this.cleanupVoiceBtn = null;
     this.cleanupUpdater?.();
     this.cleanupUpdater = null;
     this.cleanupWatcher?.();

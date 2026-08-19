@@ -209,6 +209,22 @@ const CSS = `
     padding: 2px 9px;
 }
 .p2ps-overlay-bar button:disabled { opacity: .4; cursor: default; }
+.p2ps-voice-btn { position: relative; }
+.p2ps-voice-count {
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    background: var(--status-danger, #ed4245);
+    color: #fff;
+    border-radius: 8px;
+    font-size: 10px;
+    line-height: 14px;
+    min-width: 14px;
+    text-align: center;
+    padding: 0 3px;
+    pointer-events: none;
+}
+.p2ps-launcher-hidden { display: none; }
 .p2ps-overlay-bar button {
     background: none;
     border: none;
@@ -315,11 +331,155 @@ export function updateLauncher(state: { active: boolean; viewers: number; }): vo
     }
 }
 
+/** Esconde o flutuante enquanto existe botao no painel de voz do Discord. */
+export function setLauncherHidden(hidden: boolean): void {
+    launcher?.classList.toggle("p2ps-launcher-hidden", hidden);
+}
+
 export function unmountLauncher(): void {
     if (!launcher) return;
     (launcher as any).__p2psCleanupDrag?.();
     launcher.remove();
     launcher = null;
+}
+
+// ------------------------------------------------- botao no painel de voz
+
+let voiceBtn: HTMLElement | null = null;
+let voiceObserver: MutationObserver | null = null;
+let lastState = { active: false, viewers: 0 };
+
+/**
+ * Acha o botao nativo de compartilhar tela no painel de voz.
+ *
+ * Estrategias em ordem de robustez. Nomes de classe do Discord sao hashes que
+ * mudam a cada build, e aria-label muda com o idioma — o desenho do icone e' o
+ * que sobrevive mais tempo, entao ele vem primeiro.
+ */
+function findShareButton(): HTMLElement | null {
+    // O botao que injetamos usa o mesmo icone e um rotulo com "tela": sem esta
+    // exclusao ele viraria ancora de si mesmo a cada re-render.
+    const isOurs = (el: Element | null) => !!el?.classList.contains("p2ps-voice-btn");
+
+    // 1. pelo path do icone de compartilhar tela
+    for (const path of document.querySelectorAll('button svg path[d^="M2 4.5C2 3.397"]')) {
+        const btn = path.closest("button");
+        if (btn && !isOurs(btn)) return btn as HTMLElement;
+    }
+
+    // 2. pelo rotulo de acessibilidade, cobrindo pt e en
+    for (const btn of document.querySelectorAll<HTMLElement>("button[aria-label]")) {
+        if (isOurs(btn)) continue;
+
+        const label = (btn.getAttribute("aria-label") || "").toLowerCase();
+        if (label.includes("tela") || label.includes("screen") || label.includes("share")) {
+            return btn;
+        }
+    }
+
+    return null;
+}
+
+function paintVoiceButton(): void {
+    if (!voiceBtn) return;
+
+    const svg = voiceBtn.querySelector("svg") as SVGElement | null;
+    if (svg) {
+        svg.style.color = lastState.active ? "var(--status-danger, #ed4245)" : "";
+    }
+
+    voiceBtn.setAttribute(
+        "aria-label",
+        lastState.active
+            ? `Parar transmissão P2P — ${lastState.viewers} assistindo`
+            : "Transmitir tela via P2P"
+    );
+    voiceBtn.title = voiceBtn.getAttribute("aria-label") || "";
+
+    voiceBtn.querySelector(".p2ps-voice-count")?.remove();
+    if (lastState.active && lastState.viewers > 0) {
+        const badge = document.createElement("span");
+        badge.className = "p2ps-voice-count";
+        badge.textContent = String(lastState.viewers);
+        voiceBtn.appendChild(badge);
+    }
+}
+
+/**
+ * Injeta um botao P2P ao lado do botao nativo de tela.
+ *
+ * `onAnchorChange` avisa se o botao nativo existe: quem chama usa isso para
+ * mostrar o botao flutuante como reserva quando o Discord mudar o HTML e a
+ * injecao parar de funcionar.
+ */
+export function mountVoiceButton(opts: {
+    onToggle: () => void;
+    onAnchorChange: (found: boolean) => void;
+}): () => void {
+    const sync = () => {
+        const anchor = findShareButton();
+
+        if (!anchor) {
+            voiceBtn?.remove();
+            voiceBtn = null;
+            opts.onAnchorChange(false);
+            return;
+        }
+
+        // Ja injetado e ainda no lugar certo: nada a fazer.
+        if (voiceBtn && voiceBtn.isConnected && voiceBtn.previousElementSibling === anchor) {
+            opts.onAnchorChange(true);
+            return;
+        }
+
+        voiceBtn?.remove();
+
+        const btn = document.createElement("button");
+        // Herda as classes do vizinho: assim ele ja nasce com o visual do
+        // Discord, sem a gente adivinhar tamanho, cor e estados de hover.
+        btn.className = `${anchor.className} p2ps-voice-btn`;
+        btn.type = "button";
+        btn.innerHTML = SCREENSHARE_SVG;
+        btn.addEventListener("click", e => {
+            e.preventDefault();
+            e.stopPropagation();
+            opts.onToggle();
+        });
+
+        anchor.insertAdjacentElement("afterend", btn);
+        voiceBtn = btn;
+        paintVoiceButton();
+        opts.onAnchorChange(true);
+    };
+
+    sync();
+
+    // O Discord muta o DOM o tempo todo; rodar querySelector a cada mutacao
+    // custaria caro. Junta tudo num sync por quadro.
+    let queued = false;
+    const schedule = () => {
+        if (queued) return;
+        queued = true;
+        requestAnimationFrame(() => {
+            queued = false;
+            sync();
+        });
+    };
+
+    voiceObserver = new MutationObserver(schedule);
+    voiceObserver.observe(document.body, { childList: true, subtree: true });
+
+    return () => {
+        voiceObserver?.disconnect();
+        voiceObserver = null;
+        voiceBtn?.remove();
+        voiceBtn = null;
+    };
+}
+
+export function updateVoiceButton(state: { active: boolean; viewers: number; }): void {
+    lastState = state;
+    paintVoiceButton();
 }
 
 // ------------------------------------------------------------ source picker
