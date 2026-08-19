@@ -251,6 +251,20 @@ function recordDiagnostics(): void {
  * traz o hash novo, que não bate com o que está em disco — ou com a ausência
  * dele — e dispara a busca.
  */
+/** Remove o componente do disco, a pedido do usuário. */
+export function removeHelper(): boolean {
+    try {
+        const fs = require("fs");
+        if (fs.existsSync(helperPath())) fs.unlinkSync(helperPath());
+        lastError = null;
+        return true;
+    } catch (err) {
+        lastError = (err as Error).message;
+        console.warn("[P2PShare] não deu para remover o componente", err);
+        return false;
+    }
+}
+
 export async function syncHelper(): Promise<void> {
     if (localHelperIsValid()) return;
 
@@ -327,43 +341,25 @@ export interface IsolatedAudio {
  * Devolve null quando o binário não está disponível: nesse caso quem chama
  * segue com o áudio do sistema, que é pior mas funciona.
  */
-export interface IsolationRequest {
-    /** "discord" tira o Discord do caminho; "app" captura só um programa. */
-    mode: "discord" | "app";
-    /** Nome do executável quando o modo é "app". */
-    appName?: string | null;
-}
-
 /**
- * Monta os argumentos do auxiliar.
+ * Traduz a fonte escolhida em argumentos para o auxiliar.
  *
- * Devolve null quando o app escolhido não está tocando nada: sem PID não há o
- * que capturar, e é melhor cair para o áudio do sistema que transmitir mudo
- * sem explicação.
+ * O seletor devolve "window:<hwnd>:<n>" ou "screen:<id>:<n>". Janela vira
+ * captura só do programa dono dela; monitor vira tudo menos o Discord, que é
+ * o que evita devolver a chamada de voz para quem assiste.
  */
-async function helperArgs(request: IsolationRequest): Promise<string[] | null> {
-    if (request.mode !== "app") {
-        return ["--exclude", String(discordTreePid())];
+function helperArgs(sourceId: string): string[] {
+    const [kind, handle] = sourceId.split(":");
+
+    if (kind === "window" && handle) {
+        return ["--include-window", handle];
     }
 
-    if (!request.appName) return null;
-
-    const app = (await listAudioApps())
-        .find(a => a.name.toLowerCase() === request.appName!.toLowerCase());
-
-    if (!app) {
-        BdApi.UI.showToast(
-            `${request.appName} não está tocando som agora — usando o áudio do sistema`,
-            { type: "warning" }
-        );
-        return null;
-    }
-
-    return ["--include", String(app.pid)];
+    return ["--exclude", String(discordTreePid())];
 }
 
 export async function captureIsolatedAudio(
-    request: IsolationRequest = { mode: "discord" }
+    sourceId: string
 ): Promise<IsolatedAudio | null> {
     // Faltando o componente, o áudio do sistema entra no lugar sem alarde.
     const exe = await ensureHelper();
@@ -372,11 +368,8 @@ export async function captureIsolatedAudio(
         return null;
     }
 
-    const args = await helperArgs(request);
-    if (!args) return null;
-
     try {
-        const child = spawnHelper(exe, args);
+        const child = spawnHelper(exe, helperArgs(sourceId));
 
         const context = new AudioContext({ sampleRate: SAMPLE_RATE });
         const destination = context.createMediaStreamDestination();

@@ -12,6 +12,7 @@
 //! Uso:
 //!     p2pshare-audio.exe --exclude <pid>   tudo menos a arvore desse processo
 //!     p2pshare-audio.exe --include <pid>   apenas a arvore desse processo
+//!     p2pshare-audio.exe --include-window <hwnd>  o dono daquela janela
 //!     p2pshare-audio.exe --list            processos com audio ativo, em JSON
 //!
 //! Escreve PCM cru no stdout: float32 little-endian, 48 kHz, estéreo.
@@ -39,6 +40,7 @@ use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
 use windows::Win32::Media::Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
@@ -110,6 +112,25 @@ fn wave_format() -> WAVEFORMATEXTENSIBLE {
     fmt.dwChannelMask = 0x3;
     fmt.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
     fmt
+}
+
+/// Processo dono de uma janela.
+///
+/// O seletor de tela devolve a janela, nao o processo. Resolver aqui evita
+/// que o plugin precise de mais uma chamada nativa so' para isso.
+fn window_owner(hwnd: isize) -> Option<u32> {
+    let mut pid = 0u32;
+    let thread = unsafe {
+        GetWindowThreadProcessId(
+            windows::Win32::Foundation::HWND(hwnd as *mut core::ffi::c_void),
+            Some(&mut pid),
+        )
+    };
+
+    if thread == 0 || pid == 0 {
+        return None;
+    }
+    Some(pid)
 }
 
 /// Quem entra na captura: só o processo indicado, ou todo o resto.
@@ -279,11 +300,19 @@ fn main() {
     let target = args.windows(2).find_map(|w| match w[0].as_str() {
         "--include" => w[1].parse::<u32>().ok().map(|pid| (pid, Scope::Include)),
         "--exclude" => w[1].parse::<u32>().ok().map(|pid| (pid, Scope::Exclude)),
+        "--include-window" => w[1]
+            .parse::<isize>()
+            .ok()
+            .and_then(window_owner)
+            .map(|pid| (pid, Scope::Include)),
         _ => None,
     });
 
     let Some((pid, scope)) = target else {
-        eprintln!("uso: p2pshare-audio.exe [--exclude <pid> | --include <pid> | --list]");
+        eprintln!(
+            "uso: p2pshare-audio.exe [--exclude <pid> | --include <pid> | \
+             --include-window <hwnd> | --list]"
+        );
         std::process::exit(2);
     };
 

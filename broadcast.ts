@@ -117,11 +117,12 @@ export async function startBroadcast(): Promise<void> {
         return;
     }
 
-    // Tenta o áudio sem o Discord antes de capturar: se o auxiliar não
-    // estiver disponível, cai para o loopback comum sem interromper nada.
-    const isolated = host.shouldCaptureAudio()
-        ? await host.captureIsolatedAudio()
-        : null;
+    // O áudio só pode ser decidido depois que a fonte é escolhida, porque
+    // ele segue a escolha: janela captura o programa dela, monitor captura
+    // tudo menos o Discord.
+    // Guardado num objeto porque o TypeScript estreita variável atribuída
+    // dentro de closure para o valor inicial.
+    const audio: { stop: (() => void) | null; } = { stop: null };
 
     let stream: MediaStream;
     try {
@@ -130,11 +131,15 @@ export async function startBroadcast(): Promise<void> {
             {
                 audio: host.shouldCaptureAudio(),
                 audioDeviceId: host.getAudioDeviceId(),
-                audioTrack: isolated?.track ?? null
+                audioForSource: async sourceId => {
+                    const isolated = await host.captureIsolatedAudio(sourceId);
+                    audio.stop = isolated?.stop ?? null;
+                    return isolated?.track ?? null;
+                }
             }
         );
     } catch (err) {
-        isolated?.stop();
+        audio.stop?.();
         host.toast(
             err instanceof CaptureError
                 ? err.message
@@ -202,14 +207,14 @@ export async function startBroadcast(): Promise<void> {
         unwatchExit();
         unsubscribe();
         stream.getTracks().forEach(track => track.stop());
-        isolated?.stop();
+        audio.stop?.();
         host.toast(`não deu para anunciar a transmissão: ${(err as Error).message}`, "error");
         return;
     }
 
     session = {
         sessionId, channelId, beaconId, stream, peers, unsubscribe, unwatchExit,
-        stopAudio: isolated?.stop
+        stopAudio: audio.stop ?? undefined
     };
     // Reaplica a escolha anterior: quem baixou para 720p não quer voltar
     // para 1440p só porque reiniciou a transmissão.

@@ -72,12 +72,13 @@ export interface CaptureOptions {
     audioDeviceId?: string | null;
 
     /**
-     * Trilha de áudio pronta, vinda de fora.
+     * Fornece a trilha de áudio depois que a fonte é escolhida.
      *
-     * É por aqui que entra o áudio do sistema já sem o Discord, capturado
-     * pelo auxiliar nativo. Tem precedência sobre o loopback comum.
+     * O áudio segue a escolha da tela: janela captura só o programa dela,
+     * monitor captura tudo menos o Discord. Por isso só dá para pedir a
+     * trilha depois de saber o que foi escolhido.
      */
-    audioTrack?: MediaStreamTrack | null;
+    audioForSource?: (sourceId: string) => Promise<MediaStreamTrack | null>;
 }
 
 /**
@@ -115,14 +116,19 @@ export async function captureScreen(
             }
         };
 
-        // Trilha pronta: só falta o vídeo, e os dois viram um stream só.
-        if (wantAudio && opts.audioTrack) {
+        // Trilha vinda do auxiliar: só falta o vídeo, e os dois viram um
+        // stream só.
+        const isolated = wantAudio && opts.audioForSource
+            ? await opts.audioForSource(sourceId)
+            : null;
+
+        if (isolated) {
             const videoOnly = await d.getUserMedia({ audio: false, video })
                 .catch((err: Error) => {
                     throw new CaptureError(`falha ao capturar a fonte: ${err.message}`);
                 });
 
-            return d.combine([...videoOnly.getTracks(), opts.audioTrack]);
+            return d.combine([...videoOnly.getTracks(), isolated]);
         }
 
         // Dispositivo escolhido: vídeo e áudio vêm de chamadas separadas e são

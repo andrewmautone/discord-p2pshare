@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.10.0
+ * @version 1.11.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -74,11 +74,12 @@ async function captureScreen(deps = {}, opts = {}) {
         maxFrameRate: 60
       }
     };
-    if (wantAudio && opts.audioTrack) {
+    const isolated = wantAudio && opts.audioForSource ? await opts.audioForSource(sourceId) : null;
+    if (isolated) {
       const videoOnly = await d.getUserMedia({ audio: false, video }).catch((err) => {
         throw new CaptureError(`falha ao capturar a fonte: ${err.message}`);
       });
-      return d.combine([...videoOnly.getTracks(), opts.audioTrack]);
+      return d.combine([...videoOnly.getTracks(), isolated]);
     }
     if (wantAudio && opts.audioDeviceId) {
       const videoOnly = await d.getUserMedia({ audio: false, video }).catch((err) => {
@@ -125,10 +126,10 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.10.0";
+var PLUGIN_VERSION = "1.11.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
-var HELPER_SHA256 = "e48cc114f63f556d1fa4945b24430040cb07a786dc03ef2e9052ed37b6796c72";
+var HELPER_SHA256 = "3b71f2742c6e92b0dd9621a332a55ce0dc51b19ded802c9bfa548de9e476b3cf";
 var UPDATE_URL = "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
 var ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -507,6 +508,18 @@ function recordDiagnostics() {
     console.warn("[P2PShare] n\xE3o deu para gravar o diagn\xF3stico de \xE1udio", err);
   }
 }
+function removeHelper() {
+  try {
+    const fs = require("fs");
+    if (fs.existsSync(helperPath())) fs.unlinkSync(helperPath());
+    lastError = null;
+    return true;
+  } catch (err) {
+    lastError = err.message;
+    console.warn("[P2PShare] n\xE3o deu para remover o componente", err);
+    return false;
+  }
+}
 async function syncHelper() {
   if (localHelperIsValid()) return;
   const hadOldVersion = helperFileExists();
@@ -522,57 +535,24 @@ function helperFileExists() {
     return false;
   }
 }
-async function listAudioApps() {
-  const exe = await ensureHelper();
-  if (!exe) return [];
-  return new Promise((resolve) => {
-    try {
-      const child = spawnHelper(exe, ["--list"]);
-      let out = "";
-      child.onData((d) => {
-        out += new TextDecoder().decode(d);
-      });
-      child.onExit(() => {
-        try {
-          resolve(JSON.parse(out.trim() || "[]"));
-        } catch {
-          resolve([]);
-        }
-      });
-    } catch (err) {
-      console.warn("[P2PShare] n\xE3o deu para listar os programas com \xE1udio", err);
-      resolve([]);
-    }
-  });
-}
 function discordTreePid() {
   return process.ppid || process.pid;
 }
-async function helperArgs(request) {
-  if (request.mode !== "app") {
-    return ["--exclude", String(discordTreePid())];
+function helperArgs(sourceId) {
+  const [kind, handle] = sourceId.split(":");
+  if (kind === "window" && handle) {
+    return ["--include-window", handle];
   }
-  if (!request.appName) return null;
-  const app = (await listAudioApps()).find((a) => a.name.toLowerCase() === request.appName.toLowerCase());
-  if (!app) {
-    BdApi.UI.showToast(
-      `${request.appName} n\xE3o est\xE1 tocando som agora \u2014 usando o \xE1udio do sistema`,
-      { type: "warning" }
-    );
-    return null;
-  }
-  return ["--include", String(app.pid)];
+  return ["--exclude", String(discordTreePid())];
 }
-async function captureIsolatedAudio(request = { mode: "discord" }) {
+async function captureIsolatedAudio(sourceId) {
   const exe = await ensureHelper();
   if (!exe) {
     console.info("[P2PShare] componente de \xE1udio ausente, usando o \xE1udio do sistema");
     return null;
   }
-  const args = await helperArgs(request);
-  if (!args) return null;
   try {
-    const child = spawnHelper(exe, args);
+    const child = spawnHelper(exe, helperArgs(sourceId));
     const context = new AudioContext({ sampleRate: SAMPLE_RATE });
     const destination = context.createMediaStreamDestination();
     const ring = new Float32Array(RING_FRAMES * CHANNELS);
@@ -1885,17 +1865,7 @@ var host = {
   getBudgetMbps: () => loadSetting("uploadBudgetMbps", DEFAULT_BUDGET_MBPS),
   shouldCaptureAudio: () => loadSetting("captureAudio", true),
   getAudioDeviceId: () => loadSetting("audioDeviceId", null),
-  captureIsolatedAudio: () => {
-    const mode = loadSetting("audioMode", "isolated");
-    if (mode === "isolated") return captureIsolatedAudio({ mode: "discord" });
-    if (mode === "app") {
-      return captureIsolatedAudio({
-        mode: "app",
-        appName: loadSetting("audioApp", null)
-      });
-    }
-    return Promise.resolve(null);
-  },
+  captureIsolatedAudio: (sourceId) => captureIsolatedAudio(sourceId),
   pickSource: openSourcePicker,
   mountOverlay,
   unmountOverlay,
@@ -2255,7 +2225,7 @@ async function startBroadcast() {
     host.toast("Entre num canal de voz primeiro", "error");
     return;
   }
-  const isolated = host.shouldCaptureAudio() ? await host.captureIsolatedAudio() : null;
+  const audio = { stop: null };
   let stream;
   try {
     stream = await captureScreen(
@@ -2263,11 +2233,15 @@ async function startBroadcast() {
       {
         audio: host.shouldCaptureAudio(),
         audioDeviceId: host.getAudioDeviceId(),
-        audioTrack: isolated?.track ?? null
+        audioForSource: async (sourceId) => {
+          const isolated = await host.captureIsolatedAudio(sourceId);
+          audio.stop = isolated?.stop ?? null;
+          return isolated?.track ?? null;
+        }
       }
     );
   } catch (err) {
-    isolated?.stop();
+    audio.stop?.();
     host.toast(
       err instanceof CaptureError ? err.message : `falha inesperada na captura: ${err.message}`,
       "error"
@@ -2316,7 +2290,7 @@ async function startBroadcast() {
     unwatchExit();
     unsubscribe();
     stream.getTracks().forEach((track) => track.stop());
-    isolated?.stop();
+    audio.stop?.();
     host.toast(`n\xE3o deu para anunciar a transmiss\xE3o: ${err.message}`, "error");
     return;
   }
@@ -2328,7 +2302,7 @@ async function startBroadcast() {
     peers,
     unsubscribe,
     unwatchExit,
-    stopAudio: isolated?.stop
+    stopAudio: audio.stop ?? void 0
   };
   setQuality(quality);
   host.mountOverlay(
@@ -2731,92 +2705,42 @@ var P2PShare = class {
     modeLabel.textContent = "\xC1udio da transmiss\xE3o";
     modeLabel.style.cssText = "margin-top:20px;margin-bottom:4px";
     const modeHint = document.createElement("div");
-    modeHint.textContent = "O Windows n\xE3o deixa o navegador capturar o \xE1udio de um app s\xF3 \u2014 o loopback comum traz a m\xE1quina inteira, o Discord junto, e quem assiste ouve a chamada de volta. O modo sem o Discord usa um programa auxiliar (140 KB) que o plugin baixa na primeira vez, com sua confirma\xE7\xE3o.";
+    modeHint.textContent = "O \xE1udio acompanha o que voc\xEA compartilha: escolhendo uma janela, vai s\xF3 o som daquele programa; escolhendo um monitor, vai tudo menos o Discord \u2014 assim quem assiste n\xE3o ouve a pr\xF3pria chamada de volta. Isso depende de um programa auxiliar de 140 KB, que o plugin instala sozinho.";
     modeHint.style.cssText = "font-size:12px;color:var(--text-muted,#72767d);margin-bottom:8px";
-    const mode = document.createElement("select");
-    mode.style.cssText = "width:100%;padding:6px;background:var(--input-background,#1e1f22);color:inherit;border:1px solid var(--background-tertiary,#202225);border-radius:4px";
-    const currentMode = loadSetting("audioMode", "isolated");
-    for (const [value, text] of [
-      ["isolated", "Sem o \xE1udio do Discord (recomendado)"],
-      ["app", "Apenas um programa"],
-      ["system", "Sistema inteiro, Discord inclu\xEDdo"]
-    ]) {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = text;
-      option.selected = value === currentMode;
-      mode.appendChild(option);
-    }
     const helperRow = document.createElement("div");
-    helperRow.style.cssText = "display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12px";
+    helperRow.style.cssText = "display:flex;align-items:center;gap:10px;font-size:12px";
     const helperStatus = document.createElement("span");
     const helperBtn = document.createElement("button");
     helperBtn.type = "button";
-    helperBtn.textContent = "Tentar de novo";
-    helperBtn.style.cssText = "padding:5px 10px;border:none;border-radius:3px;cursor:pointer;background:var(--brand-experiment,#5865f2);color:#fff;font-size:12px";
+    helperBtn.style.cssText = "padding:5px 10px;border:none;border-radius:3px;cursor:pointer;color:#fff;font-size:12px;flex-shrink:0";
     const paintHelper = () => {
       const ready = helperReady();
       const err = helperError();
-      helperStatus.textContent = ready ? "Componente de \xE1udio instalado." : err ? `N\xE3o deu para instalar o componente: ${err}. Enquanto isso, os modos acima usam o \xE1udio do sistema.` : "Componente de \xE1udio indispon\xEDvel \u2014 baixando em segundo plano. Enquanto isso, os modos acima usam o \xE1udio do sistema.";
+      helperStatus.textContent = ready ? "Componente de \xE1udio instalado." : err ? `N\xE3o deu para instalar: ${err}` : "Instalando o componente de \xE1udio\u2026";
       helperStatus.style.color = ready ? "var(--text-positive, #23a55a)" : "var(--text-muted, #72767d)";
-      helperBtn.style.display = ready ? "none" : "";
+      helperBtn.textContent = ready ? "Desinstalar" : "Tentar de novo";
+      helperBtn.style.background = ready ? "var(--status-danger, #ed4245)" : "var(--brand-experiment, #5865f2)";
     };
     helperBtn.addEventListener("click", async () => {
       helperBtn.disabled = true;
-      helperBtn.textContent = "Baixando\u2026";
-      await ensureHelper();
+      if (helperReady()) {
+        removeHelper();
+      } else {
+        helperBtn.textContent = "Baixando\u2026";
+        await ensureHelper();
+      }
       helperBtn.disabled = false;
-      helperBtn.textContent = "Tentar de novo";
       paintHelper();
     });
     helperRow.append(helperStatus, helperBtn);
     paintHelper();
-    const appRow = document.createElement("div");
-    appRow.style.marginTop = "10px";
-    const appSelect = document.createElement("select");
-    appSelect.style.cssText = mode.style.cssText;
-    const appHint = document.createElement("div");
-    appHint.textContent = "A lista mostra os programas que est\xE3o emitindo som agora \u2014 um jogo que ainda n\xE3o tocou nada n\xE3o aparece. A escolha \xE9 guardada pelo nome do execut\xE1vel, ent\xE3o continua valendo depois de fechar e abrir.";
-    appHint.style.cssText = "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
-    const savedApp = loadSetting("audioApp", null);
-    const fillApps = async () => {
-      appSelect.textContent = "";
-      const placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "Procurando programas com som\u2026";
-      appSelect.appendChild(placeholder);
-      const apps = await listAudioApps();
-      appSelect.textContent = "";
-      if (!apps.length) {
-        const empty = document.createElement("option");
-        empty.value = "";
-        empty.textContent = "Nenhum programa tocando som agora";
-        appSelect.appendChild(empty);
+    const timer = setInterval(() => {
+      if (!wrap.isConnected) {
+        clearInterval(timer);
         return;
       }
-      for (const app of apps.filter((a) => !/discord/i.test(a.name))) {
-        const option = document.createElement("option");
-        option.value = app.name;
-        option.textContent = app.name;
-        option.selected = app.name === savedApp;
-        appSelect.appendChild(option);
-      }
-    };
-    appSelect.addEventListener("change", () => saveSetting("audioApp", appSelect.value || null));
-    appSelect.addEventListener("focus", () => {
-      void fillApps();
-    });
-    appRow.append(appSelect, appHint);
-    const syncAppRow = () => {
-      appRow.style.display = mode.value === "app" ? "" : "none";
-      helperRow.style.display = mode.value === "system" ? "none" : "";
-      if (mode.value === "app") void fillApps();
-    };
-    mode.addEventListener("change", () => {
-      saveSetting("audioMode", mode.value);
-      syncAppRow();
-    });
-    syncAppRow();
+      paintHelper();
+    }, 1500);
     wrap.append(
       label,
       hint,
@@ -2827,9 +2751,7 @@ var P2PShare = class {
       audioHint,
       modeLabel,
       modeHint,
-      mode,
-      helperRow,
-      appRow
+      helperRow
     );
     return wrap;
   }

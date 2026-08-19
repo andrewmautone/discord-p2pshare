@@ -40,20 +40,7 @@ export const host: Host = {
     getBudgetMbps: () => loadSetting("uploadBudgetMbps", DEFAULT_BUDGET_MBPS),
     shouldCaptureAudio: () => loadSetting("captureAudio", true),
     getAudioDeviceId: () => loadSetting<string | null>("audioDeviceId", null),
-    captureIsolatedAudio: () => {
-        const mode = loadSetting("audioMode", "isolated");
-
-        if (mode === "isolated") return captureIsolatedAudio({ mode: "discord" });
-        if (mode === "app") {
-            return captureIsolatedAudio({
-                mode: "app",
-                appName: loadSetting<string | null>("audioApp", null)
-            });
-        }
-
-        // "system": o loopback comum do Chromium dá conta.
-        return Promise.resolve(null);
-    },
+    captureIsolatedAudio: sourceId => captureIsolatedAudio(sourceId),
     pickSource: ui.openSourcePicker,
 
     mountOverlay: ui.mountOverlay,

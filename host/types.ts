@@ -99,12 +99,15 @@ export interface Host {
     getAudioDeviceId(): string | null;
 
     /**
-     * Áudio do sistema sem o próprio Discord dentro.
+     * Áudio combinando com a fonte escolhida.
      *
-     * Devolve null quando não há como isolar — aí quem chama segue com o
-     * loopback comum, que é pior mas funciona.
+     * Janela: só o áudio do programa dono dela. Monitor: tudo menos o
+     * Discord. Devolve null quando não há como isolar — aí quem chama segue
+     * com o loopback comum, que é pior mas funciona.
      */
-    captureIsolatedAudio(): Promise<{ track: MediaStreamTrack; stop: () => void; } | null>;
+    captureIsolatedAudio(
+        sourceId: string
+    ): Promise<{ track: MediaStreamTrack; stop: () => void; } | null>;
     /** Abre o seletor de tela/janela. Resolve com null se o usuário cancelar. */
     pickSource(sources: CaptureSource[]): Promise<string | null>;
 
