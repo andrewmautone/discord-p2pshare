@@ -1,55 +1,60 @@
 P2PShare - compartilhamento de tela ponto-a-ponto no Discord
 =============================================================
 
-COMO INSTALAR
+INSTALAR  (leva 1 minuto, sem executavel nenhum)
 
-  Duplo-clique em "Instalar.bat" e siga as instrucoes.
+  Se voce ja usa BetterDiscord:
 
-  Se voce ainda nao tem o BetterDiscord, o script baixa o instalador
-  oficial e abre pra voce. Depois ele copia o plugin sozinho.
+    1. No Discord: Configuracoes > BetterDiscord > Plugins
+    2. Clique no botao "Open Plugins Folder" no topo da pagina
+    3. Arraste o arquivo P2PShare.plugin.js para dentro da pasta
+    4. Volte pro Discord e ligue o toggle do P2PShare
 
-  No fim: reinicie o Discord (feche pela bandeja do sistema tambem) e
-  ligue o P2PShare em Configuracoes > BetterDiscord > Plugins.
+    Pronto. Nao precisa reiniciar.
 
-  Se preferir na mao: copie o arquivo P2PShare.plugin.js para a pasta
-  %AppData%\BetterDiscord\plugins
+  Se ainda nao usa BetterDiscord:
+
+    Instale primeiro em https://betterdiscord.app
+    (instalador oficial e assinado - o mesmo que todo mundo usa)
+    Depois siga os 4 passos acima.
 
 
-COMO USAR
+USAR
 
   Transmitir  Entre num canal de voz e clique no botao flutuante de
-              tela (arrastavel, canto da tela). Ele pergunta qual
-              janela ou monitor voce quer compartilhar.
-              O botao fica vermelho enquanto voce transmite e mostra
-              quantas pessoas estao assistindo. Clique de novo para
-              parar.
+              tela - ele fica no canto e voce pode arrastar pra onde
+              quiser. Ele pergunta qual janela ou monitor compartilhar.
 
-  Assistir    Quando alguem do canal transmite, aparece um aviso no
-              topo do Discord com o botao "Assistir".
+              Enquanto voce transmite o botao fica vermelho e mostra
+              quantas pessoas estao assistindo. Clique de novo pra parar.
+
+  Assistir    Quando alguem do canal comeca a transmitir, aparece um
+              aviso no topo do Discord com o botao "Assistir".
 
 
 COMO FUNCIONA
 
-  O video vai direto do PC de quem transmite para o PC de quem assiste,
+  O video vai direto do PC de quem transmite pro PC de quem assiste,
   por WebRTC. Nao passa pela infra de video do Discord, entao nao tem
-  o teto de qualidade dela. Nao existe servidor: a negociacao da conexao
-  viaja em mensagens no chat do proprio canal, que o plugin apaga
-  sozinho depois.
+  o teto de qualidade dela. E nao existe servidor: a negociacao da
+  conexao viaja em mensagens no chat do proprio canal, que o plugin
+  apaga sozinho depois.
 
 
-LIMITACOES - LEIA
+LIMITACOES - LEIA ANTES
 
   * Todo mundo precisa do plugin. Quem nao tem ve so uma mensagem
-    normal no chat com o link de instalacao.
+    normal no chat, com o link de instalacao.
 
   * Sem TURN. Quem estiver atras de NAT simetrico (CGNAT de operadora,
     algumas redes corporativas) nao vai conseguir conectar. O plugin
-    avisa quando isso acontece em vez de ficar travado.
+    avisa quando isso acontece em vez de ficar travado esperando.
 
   * O upload de quem transmite e dividido entre os espectadores. Acima
-    de ~6 pessoas a qualidade cai bastante. Da pra ajustar o orcamento
-    de upload nas configuracoes do plugin.
+    de umas 6 pessoas a qualidade cai bastante. Da pra ajustar o
+    orcamento de upload nas configuracoes do plugin.
 
-  * BetterDiscord e Vencord nao convivem bem. Use um ou outro.
+  * BetterDiscord e Vencord nao convivem bem - os dois mexem no mesmo
+    lugar do Discord. Use um ou outro.
 
   * Client mods violam os Termos de Servico do Discord. O risco e seu.

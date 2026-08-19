@@ -58,8 +58,10 @@ await build({
 const bundled = await readFile(outFile, "utf8");
 await writeFile(outFile, META + bundled, "utf8");
 
-// O instalador viaja junto do plugin: o .ps1 procura o .plugin.js ao lado dele.
-for (const name of ["instalar.ps1", "Instalar.bat", "LEIA-ME.txt"]) {
+// Só o plugin e as instruções. Nada de script: o BetterDiscord já instala
+// plugin arrastando o arquivo, e um .bat/.ps1 no zip só serve para disparar
+// aviso de SmartScreen e assustar quem vai instalar.
+for (const name of ["LEIA-ME.txt"]) {
     const from = resolve(root, "scripts", name);
     try {
         await copyFile(from, resolve(outDir, name));
