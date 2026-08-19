@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.15.1
+ * @version 1.16.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,11 +129,11 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.15.1";
+var PLUGIN_VERSION = "1.16.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
-var HELPER_TAG = "audio-v1";
+var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
-var HELPER_SHA256 = "3b71f2742c6e92b0dd9621a332a55ce0dc51b19ded802c9bfa548de9e476b3cf";
+var HELPER_SHA256 = "f78221d17c22d2cdc8c4067a9c27e8791c78f88eda70561258b1b80f235936e5";
 var UPDATE_URL = "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
 var ICE_SERVERS = [
   { urls: "stun:stun.cloudflare.com:3478" },
@@ -386,111 +386,83 @@ function toBytes(data) {
 }
 
 // host/bd/audioHelper.ts
-function attemptMarkerPath() {
-  return require("path").join(BdApi.Plugins.folder, ".p2pshare-audio-attempt");
+function beside(name) {
+  return require("path").join(BdApi.Plugins.folder, name);
 }
-var nativeBlocked = false;
-function nativeAudioBlocked() {
-  return nativeBlocked;
+function newToken() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-function unblockNativeAudio() {
-  nativeBlocked = false;
+async function request(ep, path, params = {}, signal) {
+  const query = new URLSearchParams({ token: ep.token, ...params });
+  return fetch(`http://127.0.0.1:${ep.port}${path}?${query}`, { signal });
+}
+async function alive(ep) {
   try {
-    const fs = require("fs");
-    if (fs.existsSync(attemptMarkerPath())) fs.unlinkSync(attemptMarkerPath());
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 1500);
+    const res = await request(ep, "/ping", {}, abort.signal);
+    clearTimeout(timer);
+    return res.ok;
   } catch {
+    return false;
   }
 }
-function checkPreviousCrash() {
-  try {
-    const fs = require("fs");
-    if (!fs.existsSync(attemptMarkerPath())) return;
-    fs.unlinkSync(attemptMarkerPath());
-    nativeBlocked = true;
-    lastError = "a tentativa anterior derrubou o Discord; o \xE1udio isolado ficou desligado por seguran\xE7a";
-    console.warn("[P2PShare] " + lastError);
-  } catch {
-  }
-}
-function spawnHelper(exe, args) {
-  if (nativeBlocked) {
-    throw new Error("caminho nativo desligado depois de uma queda anterior");
-  }
-  const wrap = process.binding;
-  if (typeof wrap !== "function") {
-    throw new Error("este cliente n\xE3o exp\xF5e as liga\xE7\xF5es necess\xE1rias");
-  }
-  const { Process } = wrap("process_wrap");
-  const pipeWrap = wrap("pipe_wrap");
-  if (typeof Process !== "function" || typeof pipeWrap?.Pipe !== "function") {
-    throw new Error("as liga\xE7\xF5es de processo n\xE3o t\xEAm o formato esperado");
-  }
+async function waitForPort(deadlineMs = 8e3) {
   const fs = require("fs");
-  fs.writeFileSync(attemptMarkerPath(), (/* @__PURE__ */ new Date()).toISOString(), "utf8");
-  const clearMarker = () => {
+  const file = beside("p2pshare-audio.port");
+  const until = Date.now() + deadlineMs;
+  while (Date.now() < until) {
     try {
-      if (fs.existsSync(attemptMarkerPath())) fs.unlinkSync(attemptMarkerPath());
+      if (fs.existsSync(file)) {
+        const port = parseInt(String(fs.readFileSync(file, "utf8")).trim(), 10);
+        if (port > 0) return port;
+      }
     } catch {
     }
-  };
-  const stdout = new pipeWrap.Pipe(pipeWrap.constants.SOCKET);
-  const child = new Process();
-  let onData = () => {
-  };
-  let onExit = () => {
-  };
-  let alive = true;
-  stdout.onread = (first, second) => {
-    const data = typeof first === "number" ? second : first;
-    if (data && data.byteLength) onData(new Uint8Array(data));
-  };
-  child.onexit = () => {
-    alive = false;
-    onExit();
-  };
-  const code = child.spawn({
-    file: exe,
-    // argv[0] é o próprio programa, como todo processo espera.
-    args: [exe, ...args],
-    // Caminho real, nunca undefined: a checagem nativa do Node 24 é
-    // mais estrita e aborta o processo em vez de reclamar.
-    cwd: BdApi.Plugins.folder,
-    windowsHide: true,
-    windowsVerbatimArguments: false,
-    detached: false,
-    envPairs: Object.entries(process.env).map(([k, v]) => `${k}=${v}`),
-    stdio: [
-      { type: "ignore" },
-      { type: "pipe", handle: stdout, readable: false, writable: true },
-      { type: "ignore" }
-    ]
-  });
-  if (code !== 0) {
-    clearMarker();
-    throw new Error(`n\xE3o deu para iniciar o componente (c\xF3digo ${code})`);
+    await new Promise((r) => setTimeout(r, 100));
   }
-  stdout.readStart();
-  setTimeout(clearMarker, 1500);
-  return {
-    onData: (handler) => {
-      onData = handler;
-    },
-    onExit: (handler) => {
-      onExit = handler;
-    },
-    kill: () => {
-      if (!alive) return;
-      alive = false;
-      try {
-        child.kill();
-      } catch {
-      }
-      try {
-        stdout.close();
-      } catch {
-      }
+  let motivo = "";
+  try {
+    motivo = String(fs.readFileSync(beside("p2pshare-audio.log"), "utf8")).trim();
+  } catch {
+  }
+  throw new Error(motivo || "o componente de \xE1udio n\xE3o respondeu a tempo");
+}
+var endpoint = null;
+var starting = null;
+async function startServer() {
+  const exe = await ensureHelper();
+  if (!exe) return null;
+  const fs = require("fs");
+  const token = newToken();
+  fs.writeFileSync(beside("p2pshare-audio.token"), token, "utf8");
+  for (const resto of ["p2pshare-audio.port", "p2pshare-audio.log"]) {
+    try {
+      if (fs.existsSync(beside(resto))) fs.unlinkSync(beside(resto));
+    } catch {
     }
-  };
+  }
+  const { shell } = require("electron");
+  const problema = await shell.openPath(exe);
+  if (problema) throw new Error(problema);
+  return { port: await waitForPort(), token };
+}
+async function helperEndpoint() {
+  if (endpoint && await alive(endpoint)) return endpoint;
+  starting ??= startServer().then((ep) => {
+    endpoint = ep;
+    return ep;
+  }).catch((err) => {
+    lastError = err.message;
+    recordDiagnostics();
+    console.warn("[P2PShare] n\xE3o deu para iniciar o componente de \xE1udio", err);
+    return null;
+  }).finally(() => {
+    starting = null;
+  });
+  return starting;
 }
 var HELPER_NAME = "p2pshare-audio.exe";
 var SAMPLE_RATE = 48e3;
@@ -511,7 +483,7 @@ function sha256(data) {
 }
 function readBinaryFile(file) {
   const fs = require("fs");
-  const size = fs.statSync(file).size;
+  const { size } = fs.statSync(file);
   const tentativas = [
     () => fs.readFileSync(file, { encoding: null }),
     () => fs.readFileSync(file, "latin1"),
@@ -649,21 +621,25 @@ function helperFileExists() {
 function discordTreePid() {
   return process.ppid || process.pid;
 }
-function helperArgs(sourceId) {
+function pcmParams(sourceId) {
   const [kind, handle] = sourceId.split(":");
   if (kind === "window" && handle) {
-    return ["--include-window", handle];
+    return { mode: "window", target: handle };
   }
-  return ["--exclude", String(discordTreePid())];
+  return { mode: "exclude", target: String(discordTreePid()) };
 }
 async function captureIsolatedAudio(sourceId) {
-  const exe = await ensureHelper();
-  if (!exe) {
+  const ep = await helperEndpoint();
+  if (!ep) {
     console.info("[P2PShare] componente de \xE1udio ausente, usando o \xE1udio do sistema");
     return null;
   }
   try {
-    const child = spawnHelper(exe, helperArgs(sourceId));
+    const abort = new AbortController();
+    const res = await request(ep, "/pcm", pcmParams(sourceId), abort.signal);
+    if (!res.ok || !res.body) {
+      throw new Error(`o componente respondeu ${res.status}`);
+    }
     const context = new AudioContext({ sampleRate: SAMPLE_RATE });
     const destination = context.createMediaStreamDestination();
     const ring = new Float32Array(RING_FRAMES * CHANNELS);
@@ -671,7 +647,7 @@ async function captureIsolatedAudio(sourceId) {
     let readAt = 0;
     let available = 0;
     let leftover = new Uint8Array(0);
-    child.onData((chunk) => {
+    const alimenta = (chunk) => {
       let buf = chunk;
       if (leftover.length) {
         buf = new Uint8Array(leftover.length + chunk.length);
@@ -687,7 +663,18 @@ async function captureIsolatedAudio(sourceId) {
         if (available < ring.length) available++;
         else readAt = (readAt + 1) % ring.length;
       }
-    });
+    };
+    const reader = res.body.getReader();
+    void (async () => {
+      try {
+        for (; ; ) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) alimenta(new Uint8Array(value));
+        }
+      } catch {
+      }
+    })();
     const node = context.createScriptProcessor(1024, 0, CHANNELS);
     node.onaudioprocess = (event) => {
       const left = event.outputBuffer.getChannelData(0);
@@ -708,13 +695,11 @@ async function captureIsolatedAudio(sourceId) {
     const track = destination.stream.getAudioTracks()[0];
     if (!track) throw new Error("o contexto de \xE1udio n\xE3o produziu trilha");
     const stop = () => {
-      child.kill();
+      abort.abort();
+      node.onaudioprocess = null;
       node.disconnect();
       void context.close();
     };
-    child.onExit(() => {
-      node.onaudioprocess = null;
-    });
     return { track, stop };
   } catch (err) {
     lastError = err.message;
@@ -1659,10 +1644,10 @@ function openSourcePicker(sources) {
     const okBtn = backdrop.querySelector('[data-act="ok"]');
     const audioCheck = backdrop.querySelector('[data-act="audio"]');
     const audioLabel = backdrop.querySelector('[data-act="audio-label"]');
-    const audioAvailable = helperReady() && !nativeAudioBlocked();
+    const audioAvailable = helperReady();
     audioCheck.disabled = !audioAvailable;
     audioCheck.checked = audioAvailable && BdApi.Data.load("P2PShare", "captureAudio") !== false;
-    audioLabel.textContent = audioAvailable ? "Transmitir \xE1udio" : nativeAudioBlocked() ? "\xC1udio desligado \u2014 a \xFAltima tentativa derrubou o Discord" : "\xC1udio indispon\xEDvel \u2014 componente ainda n\xE3o instalado";
+    audioLabel.textContent = audioAvailable ? "Transmitir \xE1udio" : "\xC1udio indispon\xEDvel \u2014 componente ainda n\xE3o instalado";
     audioCheck.addEventListener("change", () => BdApi.Data.save("P2PShare", "captureAudio", audioCheck.checked));
     let settled = false;
     const settle = (id) => {
@@ -2800,7 +2785,6 @@ var P2PShare = class {
       refreshLive();
     });
     this.cleanupUpdater = startUpdateChecks();
-    checkPreviousCrash();
     void syncHelper();
     setTimeout(() => ui_exports.dumpVoiceDiagnostics(), 8e3);
   }
@@ -2880,17 +2864,14 @@ var P2PShare = class {
     const paintHelper = () => {
       const ready = helperReady();
       const err = helperError();
-      const blocked = nativeAudioBlocked();
-      helperStatus.textContent = blocked ? "Desligado por seguran\xE7a: a \xFAltima tentativa derrubou o Discord." : ready ? "Componente de \xE1udio instalado." : err ? `N\xE3o deu para instalar: ${err}` : "Instalando o componente de \xE1udio\u2026";
+      helperStatus.textContent = ready ? "Componente de \xE1udio instalado." : err ? `N\xE3o deu para instalar: ${err}` : "Instalando o componente de \xE1udio\u2026";
       helperStatus.style.color = ready ? "var(--text-positive, #23a55a)" : "var(--text-muted, #72767d)";
-      helperBtn.textContent = blocked ? "Ligar de novo" : ready ? "Desinstalar" : "Tentar de novo";
-      helperBtn.style.background = ready && !blocked ? "var(--status-danger, #ed4245)" : "var(--brand-experiment, #5865f2)";
+      helperBtn.textContent = ready ? "Desinstalar" : "Tentar de novo";
+      helperBtn.style.background = ready ? "var(--status-danger, #ed4245)" : "var(--brand-experiment, #5865f2)";
     };
     helperBtn.addEventListener("click", async () => {
       helperBtn.disabled = true;
-      if (nativeAudioBlocked()) {
-        unblockNativeAudio();
-      } else if (helperReady()) {
+      if (helperReady()) {
         removeHelper();
       } else {
         helperBtn.textContent = "Baixando\u2026";

@@ -9,18 +9,27 @@
 //! `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK`, que aceita excluir uma
 //! árvore de processos. Passando o PID do Discord, sai tudo menos ele.
 //!
-//! Uso:
+//! Sem argumento nenhum ele sobe um servidor HTTP em 127.0.0.1 e serve o
+//! áudio por ali — é assim que o plugin o usa, porque `shell.openPath`, o
+//! único jeito de iniciar um programa a partir do BetterDiscord, não passa
+//! argumentos nem dá acesso ao stdout. Veja `serve.rs`.
+//!
+//! Os modos de linha de comando continuam, para uso direto e para teste:
 //!     p2pshare-audio.exe --exclude <pid>   tudo menos a arvore desse processo
 //!     p2pshare-audio.exe --include <pid>   apenas a arvore desse processo
 //!     p2pshare-audio.exe --include-window <hwnd>  o dono daquela janela
 //!     p2pshare-audio.exe --list            processos com audio ativo, em JSON
 //!
-//! Escreve PCM cru no stdout: float32 little-endian, 48 kHz, estéreo.
-//! Mensagens vão para o stderr, para não corromper o fluxo de áudio.
+//! Em qualquer modo o PCM é o mesmo: float32 little-endian, 48 kHz, estéreo.
 
+// Sem console: o programa é iniciado pelo plugin e não tem nada a mostrar.
+// Uma janela preta piscando a cada transmissão seria só susto.
+#![windows_subsystem = "windows"]
+
+mod serve;
 mod sessions;
 
-use std::io::{ErrorKind, Write};
+use std::io::Write;
 use std::sync::mpsc::{channel, Sender};
 
 use windows::core::{implement, Interface, Result, HRESULT, PCWSTR, PROPVARIANT};
@@ -118,7 +127,7 @@ fn wave_format() -> WAVEFORMATEXTENSIBLE {
 ///
 /// O seletor de tela devolve a janela, nao o processo. Resolver aqui evita
 /// que o plugin precise de mais uma chamada nativa so' para isso.
-fn window_owner(hwnd: isize) -> Option<u32> {
+pub fn window_owner(hwnd: isize) -> Option<u32> {
     let mut pid = 0u32;
     let thread = unsafe {
         GetWindowThreadProcessId(
@@ -135,7 +144,7 @@ fn window_owner(hwnd: isize) -> Option<u32> {
 
 /// Quem entra na captura: só o processo indicado, ou todo o resto.
 #[derive(Clone, Copy)]
-enum Scope {
+pub enum Scope {
     Include,
     Exclude,
 }
@@ -193,7 +202,25 @@ fn activate_client(target_pid: u32, scope: Scope) -> Result<IAudioClient> {
         .cast::<IAudioClient>()
 }
 
-fn run(target_pid: u32, scope: Scope) -> Result<()> {
+/// Registra uma falha ao lado do executável.
+///
+/// Sem console não há stderr para ler. Um arquivo é o único jeito de saber
+/// por que o auxiliar desistiu, e o plugin sabe onde procurar.
+pub fn log_fatal(message: &str) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(dir) = exe.parent() else { return };
+
+    let _ = std::fs::write(dir.join("p2pshare-audio.log"), message);
+}
+
+/// Captura e escreve o PCM no destino, até ele parar de aceitar.
+///
+/// O destino ser genérico é o que permite servir tanto o stdout do modo de
+/// linha de comando quanto uma conexão HTTP: a captura não precisa saber a
+/// diferença, e quem desiste primeiro é sempre quem lê.
+pub fn capture_to<W: Write>(sink: &mut W, target_pid: u32, scope: Scope) -> Result<()> {
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
 
     let client = activate_client(target_pid, scope)?;
@@ -216,12 +243,6 @@ fn run(target_pid: u32, scope: Scope) -> Result<()> {
     let capture: IAudioCaptureClient = unsafe { client.GetService()? };
     unsafe { client.Start()? };
 
-    match scope {
-        Scope::Include => eprintln!("[p2pshare-audio] capturando apenas o pid {target_pid}"),
-        Scope::Exclude => eprintln!("[p2pshare-audio] capturando, excluindo pid {target_pid}"),
-    }
-
-    let mut stdout = std::io::stdout();
     let frame_size = (CHANNELS * BITS / 8) as usize;
 
     loop {
@@ -254,26 +275,26 @@ fn run(target_pid: u32, scope: Scope) -> Result<()> {
             // Silêncio vem sinalizado com o buffer sujo; mandar zeros mantém o
             // fluxo contínuo, que é o que o lado do WebRTC espera.
             let written = if flags & AUDCLNT_BUFFERFLAGS_SILENT != 0 {
-                stdout.write_all(&vec![0u8; bytes])
+                sink.write_all(&vec![0u8; bytes])
             } else {
                 let slice = unsafe { std::slice::from_raw_parts(data, bytes) };
-                stdout.write_all(slice)
+                sink.write_all(slice)
             };
 
             unsafe {
                 let _ = capture.ReleaseBuffer(frames);
             }
 
-            if let Err(err) = written {
-                // O plugin fechou o processo: sair limpo, não é erro.
-                if err.kind() == ErrorKind::BrokenPipe {
-                    unsafe {
-                        let _ = client.Stop();
-                        let _ = CloseHandle(event);
-                    }
-                    return Ok(());
+            // Quem lê desistiu — aba fechada, transmissão parada, cano
+            // rompido. Numa conexão de rede isso chega como erro qualquer,
+            // não só BrokenPipe, e insistir só queimaria CPU capturando para
+            // ninguém.
+            if written.is_err() {
+                unsafe {
+                    let _ = client.Stop();
+                    let _ = CloseHandle(event);
                 }
-                eprintln!("[p2pshare-audio] falha ao escrever: {err}");
+                return Ok(());
             }
         }
     }
@@ -281,6 +302,13 @@ fn run(target_pid: u32, scope: Scope) -> Result<()> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    // Iniciado pelo plugin, que nao tem como passar argumentos: sobe o
+    // servidor local e espera o pedido de captura chegar por HTTP.
+    if args.len() <= 1 {
+        serve::serve();
+        return;
+    }
 
     if args.iter().any(|a| a == "--list") {
         unsafe {
@@ -316,8 +344,9 @@ fn main() {
         std::process::exit(2);
     };
 
-    if let Err(err) = run(pid, scope) {
-        eprintln!("[p2pshare-audio] erro: {err}");
+    let mut stdout = std::io::stdout();
+    if let Err(err) = capture_to(&mut stdout, pid, scope) {
+        log_fatal(&format!("erro na captura: {err}"));
         std::process::exit(1);
     }
 }

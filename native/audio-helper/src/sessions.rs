@@ -50,8 +50,14 @@ fn escape_json(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Imprime `[{"pid":123,"name":"jogo.exe"}, ...]` no stdout.
+/// Imprime no stdout o que `list_json` monta. Só o modo de linha de comando.
 pub fn list() -> windows::core::Result<()> {
+    println!("{}", list_json()?);
+    Ok(())
+}
+
+/// Monta `[{"pid":123,"name":"jogo.exe"}, ...]`.
+pub fn list_json() -> windows::core::Result<String> {
     let mut seen: Vec<(u32, String)> = Vec::new();
 
     unsafe {
@@ -89,6 +95,5 @@ pub fn list() -> windows::core::Result<()> {
         .map(|(pid, name)| format!("{{\"pid\":{},\"name\":\"{}\"}}", pid, escape_json(name)))
         .collect();
 
-    println!("[{}]", items.join(","));
-    Ok(())
+    Ok(format!("[{}]", items.join(",")))
 }

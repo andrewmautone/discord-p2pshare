@@ -5,7 +5,7 @@
  */
 
 import type { CaptureChoice, CaptureSource } from "../../capture";
-import { helperReady, nativeAudioBlocked } from "./audioHelper";
+import { helperReady } from "./audioHelper";
 
 declare const BdApi: any;
 
@@ -1176,19 +1176,14 @@ export function openSourcePicker(sources: CaptureSource[]): Promise<CaptureChoic
 
         // Sem o componente, o único áudio possível seria o do sistema — que
         // devolve a própria chamada para quem assiste. Melhor ir sem áudio.
-        const audioAvailable = helperReady() && !nativeAudioBlocked();
+        const audioAvailable = helperReady();
 
         audioCheck.disabled = !audioAvailable;
         audioCheck.checked = audioAvailable && BdApi.Data.load("P2PShare", "captureAudio") !== false;
 
-        // Motivos diferentes exigem textos diferentes: "não instalado" quando
-        // o componente falta, e outra coisa quando ele existe mas foi
-        // desligado depois de derrubar o Discord.
         audioLabel.textContent = audioAvailable
             ? "Transmitir áudio"
-            : nativeAudioBlocked()
-                ? "Áudio desligado — a última tentativa derrubou o Discord"
-                : "Áudio indisponível — componente ainda não instalado";
+            : "Áudio indisponível — componente ainda não instalado";
         audioCheck.addEventListener("change", () =>
             BdApi.Data.save("P2PShare", "captureAudio", audioCheck.checked));
 

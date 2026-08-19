@@ -16,14 +16,11 @@ import { DEFAULT_BUDGET_MBPS } from "./constants";
 import { loadSetting, saveSetting, ui } from "./host/bd";
 import { getCurrentUserId, getCurrentUsername, getUsername } from "./host/bd/api";
 import {
-    checkPreviousCrash,
     ensureHelper,
     helperError,
     helperReady,
-    nativeAudioBlocked,
     removeHelper,
-    syncHelper,
-    unblockNativeAudio
+    syncHelper
 } from "./host/bd/audioHelper";
 import { startUpdateChecks } from "./host/bd/updater";
 import { getActiveBeacons, initWatcher, isWatching, onBeaconsChange, startWatching } from "./watch";
@@ -123,9 +120,6 @@ export default class P2PShare {
 
         // Não bloqueia o start: se o host estiver fora do ar, o plugin sobe igual.
         this.cleanupUpdater = startUpdateChecks();
-
-        // Antes de qualquer captura: a tentativa anterior derrubou o Discord?
-        checkPreviousCrash();
 
 
         // Instala ou atualiza o componente de áudio em segundo plano. É o
@@ -255,23 +249,18 @@ export default class P2PShare {
         const paintHelper = () => {
             const ready = helperReady();
             const err = helperError();
-            const blocked = nativeAudioBlocked();
 
-            helperStatus.textContent = blocked
-                ? "Desligado por segurança: a última tentativa derrubou o Discord."
-                : ready
-                    ? "Componente de áudio instalado."
-                    : err
-                        ? `Não deu para instalar: ${err}`
-                        : "Instalando o componente de áudio…";
+            helperStatus.textContent = ready
+                ? "Componente de áudio instalado."
+                : err
+                    ? `Não deu para instalar: ${err}`
+                    : "Instalando o componente de áudio…";
             helperStatus.style.color = ready
                 ? "var(--text-positive, #23a55a)"
                 : "var(--text-muted, #72767d)";
 
-            helperBtn.textContent = blocked
-                ? "Ligar de novo"
-                : ready ? "Desinstalar" : "Tentar de novo";
-            helperBtn.style.background = ready && !blocked
+            helperBtn.textContent = ready ? "Desinstalar" : "Tentar de novo";
+            helperBtn.style.background = ready
                 ? "var(--status-danger, #ed4245)"
                 : "var(--brand-experiment, #5865f2)";
         };
@@ -279,9 +268,7 @@ export default class P2PShare {
         helperBtn.addEventListener("click", async () => {
             helperBtn.disabled = true;
 
-            if (nativeAudioBlocked()) {
-                unblockNativeAudio();
-            } else if (helperReady()) {
+            if (helperReady()) {
                 removeHelper();
             } else {
                 helperBtn.textContent = "Baixando…";

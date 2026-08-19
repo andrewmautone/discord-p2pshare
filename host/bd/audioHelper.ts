@@ -27,159 +27,143 @@ declare const BdApi: any;
  */
 
 /**
- * Inicia um processo sem `child_process`.
+ * Endereço do servidor local do auxiliar.
  *
- * O `require` do BetterDiscord atende uma lista fixa de módulos e tenta
- * resolver o resto como caminho de arquivo — `child_process` fica de fora, e
- * a falha aparece como um ENOENT apontando para dentro da pasta do Discord.
- * O `process.mainModule`, que daria o require original, não existe no
- * renderer do Discord.
+ * O auxiliar deixou de escrever no stdout porque o stdout deixou de ser
+ * alcançável: iniciar processo a partir do BetterDiscord exigia
+ * `child_process`, que ele não entrega, e a via alternativa — as ligações
+ * internas do Node — derruba o Discord, porque no Node 24 elas abortam o
+ * processo em vez de lançar exceção. Isso foi reproduzido, não suposto.
  *
- * Sobram as ligações de baixo nível, que continuam acessíveis: são as mesmas
- * que o próprio `child_process` usa por baixo. Verificado antes de escrever
- * isto — spawn retorna 0 e o stdout chega inteiro.
+ * Sobrou `shell.openPath`, que inicia um programa mas não passa argumentos
+ * nem dá stdout. Então o auxiliar sobe um servidor HTTP em 127.0.0.1 e o
+ * plugin fala com ele por ali — a política de conteúdo do Discord libera esse
+ * destino, inclusive com leitura incremental.
  */
-export interface HelperProcess {
-    onData(handler: (data: Uint8Array) => void): void;
-    onExit(handler: () => void): void;
-    kill(): void;
+interface HelperEndpoint {
+    port: number;
+    token: string;
+}
+
+function beside(name: string): string {
+    return require("path").join(BdApi.Plugins.folder, name);
 }
 
 /**
- * Marca uma tentativa de iniciar o auxiliar em andamento.
+ * Segredo de uso único por sessão.
  *
- * Iniciar processo por ligação de baixo nível pode derrubar o renderer — e um
- * renderer que morre não executa nenhum `catch`. O arquivo fica em disco
- * durante a tentativa e some quando ela dá certo; encontrá-lo na abertura
- * seguinte significa que o Discord caiu no meio, e aí o caminho nativo é
- * desligado em vez de derrubar tudo de novo.
+ * O modo de captura pode viajar na URL; a permissão não. Sem segredo,
+ * qualquer programa da máquina poderia pedir o áudio ao auxiliar.
  */
-function attemptMarkerPath(): string {
-    return require("path").join(BdApi.Plugins.folder, ".p2pshare-audio-attempt");
+function newToken(): string {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-let nativeBlocked = false;
-
-/** O auxiliar derrubou o Discord na última tentativa? */
-export function nativeAudioBlocked(): boolean {
-    return nativeBlocked;
+async function request(
+    ep: HelperEndpoint,
+    path: string,
+    params: Record<string, string> = {},
+    signal?: AbortSignal
+): Promise<Response> {
+    const query = new URLSearchParams({ token: ep.token, ...params });
+    return fetch(`http://127.0.0.1:${ep.port}${path}?${query}`, { signal });
 }
 
-/** Libera o caminho nativo de novo, a pedido do usuário. */
-export function unblockNativeAudio(): void {
-    nativeBlocked = false;
+/** O processo que anunciou esta porta ainda é o nosso? */
+async function alive(ep: HelperEndpoint): Promise<boolean> {
     try {
-        const fs = require("fs");
-        if (fs.existsSync(attemptMarkerPath())) fs.unlinkSync(attemptMarkerPath());
-    } catch { /* nada a fazer */ }
+        const abort = new AbortController();
+        const timer = setTimeout(() => abort.abort(), 1500);
+        const res = await request(ep, "/ping", {}, abort.signal);
+        clearTimeout(timer);
+        return res.ok;
+    } catch {
+        return false;
+    }
 }
 
 /**
- * Verifica, na abertura, se a tentativa anterior terminou em queda.
+ * Espera o auxiliar anunciar em qual porta subiu.
+ *
+ * `shell.openPath` volta assim que o Windows aceita iniciar o programa, muito
+ * antes de ele estar ouvindo. O arquivo de porta é o aperto de mão.
  */
-export function checkPreviousCrash(): void {
-    try {
-        const fs = require("fs");
-        if (!fs.existsSync(attemptMarkerPath())) return;
+async function waitForPort(deadlineMs = 8000): Promise<number> {
+    const fs = require("fs");
+    const file = beside("p2pshare-audio.port");
+    const until = Date.now() + deadlineMs;
 
-        fs.unlinkSync(attemptMarkerPath());
-        nativeBlocked = true;
-        lastError =
-            "a tentativa anterior derrubou o Discord; o áudio isolado ficou " +
-            "desligado por segurança";
-        console.warn("[P2PShare] " + lastError);
-    } catch { /* sem marcador legível, segue em frente */ }
+    while (Date.now() < until) {
+        try {
+            if (fs.existsSync(file)) {
+                const port = parseInt(String(fs.readFileSync(file, "utf8")).trim(), 10);
+                if (port > 0) return port;
+            }
+        } catch { /* ainda escrevendo */ }
+
+        await new Promise(r => setTimeout(r, 100));
+    }
+
+    // O auxiliar não tem console: se desistiu, deixou o motivo em disco.
+    let motivo = "";
+    try {
+        motivo = String(fs.readFileSync(beside("p2pshare-audio.log"), "utf8")).trim();
+    } catch { /* sem log, sem motivo */ }
+
+    throw new Error(motivo || "o componente de áudio não respondeu a tempo");
 }
 
-function spawnHelper(exe: string, args: string[]): HelperProcess {
-    if (nativeBlocked) {
-        throw new Error("caminho nativo desligado depois de uma queda anterior");
-    }
+let endpoint: HelperEndpoint | null = null;
+let starting: Promise<HelperEndpoint | null> | null = null;
 
-    const wrap = (process as any).binding;
-    if (typeof wrap !== "function") {
-        throw new Error("este cliente não expõe as ligações necessárias");
-    }
-
-    const { Process } = wrap("process_wrap");
-    const pipeWrap = wrap("pipe_wrap");
-
-    if (typeof Process !== "function" || typeof pipeWrap?.Pipe !== "function") {
-        throw new Error("as ligações de processo não têm o formato esperado");
-    }
+async function startServer(): Promise<HelperEndpoint | null> {
+    const exe = await ensureHelper();
+    if (!exe) return null;
 
     const fs = require("fs");
-    fs.writeFileSync(attemptMarkerPath(), new Date().toISOString(), "utf8");
+    const token = newToken();
 
-    /** Tentativa concluída sem queda: o marcador pode sair. */
-    const clearMarker = () => {
+    fs.writeFileSync(beside("p2pshare-audio.token"), token, "utf8");
+
+    // Porta velha de um processo já encerrado enganaria a espera abaixo.
+    for (const resto of ["p2pshare-audio.port", "p2pshare-audio.log"]) {
         try {
-            if (fs.existsSync(attemptMarkerPath())) fs.unlinkSync(attemptMarkerPath());
-        } catch { /* nada a fazer */ }
-    };
-
-    const stdout = new pipeWrap.Pipe(pipeWrap.constants.SOCKET);
-    const child = new Process();
-
-    let onData: (data: Uint8Array) => void = () => { };
-    let onExit: () => void = () => { };
-    let alive = true;
-
-    // A assinatura mudou entre versões do Node: ora o buffer vem no primeiro
-    // argumento, ora no segundo com a contagem no primeiro.
-    stdout.onread = (first: unknown, second?: Uint8Array) => {
-        const data = typeof first === "number" ? second : (first as Uint8Array);
-        if (data && data.byteLength) onData(new Uint8Array(data));
-    };
-
-    child.onexit = () => {
-        alive = false;
-        onExit();
-    };
-
-    const code = child.spawn({
-        file: exe,
-        // argv[0] é o próprio programa, como todo processo espera.
-        args: [exe, ...args],
-        // Caminho real, nunca undefined: a checagem nativa do Node 24 é
-        // mais estrita e aborta o processo em vez de reclamar.
-        cwd: BdApi.Plugins.folder,
-        windowsHide: true,
-        windowsVerbatimArguments: false,
-        detached: false,
-        envPairs: Object.entries(process.env).map(([k, v]) => `${k}=${v}`),
-        stdio: [
-            { type: "ignore" },
-            { type: "pipe", handle: stdout, readable: false, writable: true },
-            { type: "ignore" }
-        ]
-    });
-
-    if (code !== 0) {
-        clearMarker();
-        throw new Error(`não deu para iniciar o componente (código ${code})`);
+            if (fs.existsSync(beside(resto))) fs.unlinkSync(beside(resto));
+        } catch { /* segue */ }
     }
 
-    stdout.readStart();
+    const { shell } = require("electron");
 
-    // Sobreviveu ao spawn e à primeira leitura: a queda, se viesse, já teria
-    // vindo. Deixar o marcador depois disso bloquearia o recurso à toa.
-    setTimeout(clearMarker, 1500);
+    // Devolve string vazia quando deu certo, e a mensagem de erro quando não.
+    const problema = await shell.openPath(exe);
+    if (problema) throw new Error(problema);
 
-    return {
-        onData: handler => { onData = handler; },
-        onExit: handler => { onExit = handler; },
-        kill: () => {
-            if (!alive) return;
-            alive = false;
-            try {
-                child.kill();
-            } catch { /* já morreu */ }
-            try {
-                stdout.close();
-            } catch { /* idem */ }
-        }
-    };
+    return { port: await waitForPort(), token };
+}
+
+/**
+ * O servidor do auxiliar, subindo-o se preciso.
+ *
+ * Ele sai sozinho depois de um tempo ocioso, então encontrar um endereço
+ * guardado não garante que ele exista — daí a confirmação antes de reusar.
+ */
+async function helperEndpoint(): Promise<HelperEndpoint | null> {
+    if (endpoint && await alive(endpoint)) return endpoint;
+
+    // Chamadas simultâneas não podem subir dois processos.
+    starting ??= startServer()
+        .then(ep => { endpoint = ep; return ep; })
+        .catch(err => {
+            lastError = (err as Error).message;
+            recordDiagnostics();
+            console.warn("[P2PShare] não deu para iniciar o componente de áudio", err);
+            return null;
+        })
+        .finally(() => { starting = null; });
+
+    return starting;
 }
 
 const HELPER_NAME = "p2pshare-audio.exe";
@@ -233,7 +217,7 @@ function sha256(data: Uint8Array): string {
  */
 function readBinaryFile(file: string): Uint8Array {
     const fs = require("fs");
-    const size = fs.statSync(file).size;
+    const { size } = fs.statSync(file);
 
     const tentativas = [
         () => fs.readFileSync(file, { encoding: null }),
@@ -462,27 +446,18 @@ export interface AudioApp {
  * executável, não pelo PID, que muda a cada abertura.
  */
 export async function listAudioApps(): Promise<AudioApp[]> {
-    const exe = await ensureHelper();
-    if (!exe) return [];
+    const ep = await helperEndpoint();
+    if (!ep) return [];
 
-    return new Promise(resolve => {
-        try {
-            const child = spawnHelper(exe, ["--list"]);
+    try {
+        const res = await request(ep, "/apps");
+        if (!res.ok) throw new Error(`o componente respondeu ${res.status}`);
 
-            let out = "";
-            child.onData(d => { out += new TextDecoder().decode(d); });
-            child.onExit(() => {
-                try {
-                    resolve(JSON.parse(out.trim() || "[]"));
-                } catch {
-                    resolve([]);
-                }
-            });
-        } catch (err) {
-            console.warn("[P2PShare] não deu para listar os programas com áudio", err);
-            resolve([]);
-        }
-    });
+        return await res.json();
+    } catch (err) {
+        console.warn("[P2PShare] não deu para listar os programas com áudio", err);
+        return [];
+    }
 }
 
 /**
@@ -513,28 +488,35 @@ export interface IsolatedAudio {
  * captura só do programa dono dela; monitor vira tudo menos o Discord, que é
  * o que evita devolver a chamada de voz para quem assiste.
  */
-function helperArgs(sourceId: string): string[] {
+function pcmParams(sourceId: string): Record<string, string> {
     const [kind, handle] = sourceId.split(":");
 
     if (kind === "window" && handle) {
-        return ["--include-window", handle];
+        return { mode: "window", target: handle };
     }
 
-    return ["--exclude", String(discordTreePid())];
+    return { mode: "exclude", target: String(discordTreePid()) };
 }
 
 export async function captureIsolatedAudio(
     sourceId: string
 ): Promise<IsolatedAudio | null> {
     // Faltando o componente, o áudio do sistema entra no lugar sem alarde.
-    const exe = await ensureHelper();
-    if (!exe) {
+    const ep = await helperEndpoint();
+    if (!ep) {
         console.info("[P2PShare] componente de áudio ausente, usando o áudio do sistema");
         return null;
     }
 
     try {
-        const child = spawnHelper(exe, helperArgs(sourceId));
+        // Abortar é como se diz ao auxiliar que a transmissão acabou: a
+        // conexão cai, a escrita dele falha, e ele encerra a captura.
+        const abort = new AbortController();
+        const res = await request(ep, "/pcm", pcmParams(sourceId), abort.signal);
+
+        if (!res.ok || !res.body) {
+            throw new Error(`o componente respondeu ${res.status}`);
+        }
 
         const context = new AudioContext({ sampleRate: SAMPLE_RATE });
         const destination = context.createMediaStreamDestination();
@@ -550,7 +532,7 @@ export async function captureIsolatedAudio(
         // o próximo pedaço. Sem isso o áudio vira ruído.
         let leftover = new Uint8Array(0);
 
-        child.onData(chunk => {
+        const alimenta = (chunk: Uint8Array) => {
             let buf = chunk;
             if (leftover.length) {
                 buf = new Uint8Array(leftover.length + chunk.length);
@@ -571,7 +553,23 @@ export async function captureIsolatedAudio(
                 if (available < ring.length) available++;
                 else readAt = (readAt + 1) % ring.length; // descarta o mais velho
             }
-        });
+        };
+
+        // Leitura incremental: os pedaços chegam conforme o auxiliar captura,
+        // e o laço termina quando alguém dos dois lados desiste.
+        const reader = res.body.getReader();
+        void (async () => {
+            try {
+                for (;;) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    if (value) alimenta(new Uint8Array(value));
+                }
+            } catch {
+                // Abortado pelo stop, ou o auxiliar saiu. Os dois são fim
+                // normal de transmissão, não erro a relatar.
+            }
+        })();
 
         // ScriptProcessor é depreciado, mas AudioWorklet exige carregar um
         // módulo por URL, e a política de conteúdo do Discord bloqueia isso.
@@ -601,15 +599,11 @@ export async function captureIsolatedAudio(
         if (!track) throw new Error("o contexto de áudio não produziu trilha");
 
         const stop = () => {
-            child.kill();
+            abort.abort();
+            node.onaudioprocess = null;
             node.disconnect();
             void context.close();
         };
-
-        // Se o helper morrer sozinho, não deixar o contexto pendurado.
-        child.onExit(() => {
-            node.onaudioprocess = null;
-        });
 
         return { track, stop };
     } catch (err) {

@@ -9,7 +9,7 @@ export const PROTOCOL_VERSION = 1;
 export const PLUGIN_URL = "https://github.com/andrewmautone/discord-p2pshare";
 
 /** Versão publicada. O build do BetterDiscord escreve isto no cabeçalho. */
-export const PLUGIN_VERSION = "1.15.1";
+export const PLUGIN_VERSION = "1.16.0";
 
 /** Link direto do instalador na release mais recente. */
 export const DOWNLOAD_URL =
@@ -38,7 +38,7 @@ export const DOWNLOAD_URL =
  * Ao mudar o binário, publique uma tag nova aqui junto com o HELPER_SHA256
  * novo. O confronto de hash abaixo é o que garante que os dois combinam.
  */
-export const HELPER_TAG = "audio-v1";
+export const HELPER_TAG = "audio-v2";
 
 export const HELPER_URL =
     `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
