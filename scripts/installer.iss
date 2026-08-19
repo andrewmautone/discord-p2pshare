@@ -8,7 +8,12 @@
 ; Saida:     release\P2PShare-Setup.exe
 
 #define AppName      "P2PShare"
-#define AppVersion   "1.0.0"
+
+; A versao vem do build (ISCC /DAppVersion=x.y.z), que a le de constants.ts.
+; Manter uma copia aqui divergiria da versao que o auto-update compara.
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
 #define AppPublisher "Andrew"
 #define AppUrl       "https://github.com/andrewmautone/vencord-p2pshare"
 #define BdInstaller  "https://github.com/BetterDiscord/Installer/releases/latest/download/BetterDiscord-Windows.exe"
@@ -56,6 +61,108 @@ brazilianportuguese.WelcomeLabel2=Isto vai instalar o {#AppName} no seu BetterDi
 [Code]
 var
   BdWasMissing: Boolean;
+  InstalledVer: String;
+
+function PluginPath(): String;
+begin
+  Result := ExpandConstant('{userappdata}\BetterDiscord\plugins\P2PShare.plugin.js');
+end;
+
+{ Le o @version do cabecalho do plugin ja instalado.
+  String vazia significa "nao instalado" ou cabecalho ilegivel. }
+function ReadInstalledVersion(): String;
+var
+  Content: AnsiString;
+  P, I: Integer;
+  Ch: Char;
+begin
+  Result := '';
+  if not FileExists(PluginPath()) then Exit;
+  if not LoadStringFromFile(PluginPath(), Content) then Exit;
+
+  P := Pos('@version', Content);
+  if P = 0 then Exit;
+
+  I := P + Length('@version');
+  { pula espacos entre a tag e o numero }
+  while (I <= Length(Content)) and (Content[I] = ' ') do
+    I := I + 1;
+
+  while I <= Length(Content) do
+  begin
+    Ch := Content[I];
+    if ((Ch >= '0') and (Ch <= '9')) or (Ch = '.') then
+      Result := Result + Ch
+    else
+      Break;
+    I := I + 1;
+  end;
+end;
+
+{ -1 se A < B, 0 se iguais, 1 se A > B.
+  Compara numero a numero: em ordem de texto "1.10" viria antes de "1.9". }
+function CompareVersions(A, B: String): Integer;
+var
+  PartA, PartB: Integer;
+  DotA, DotB: Integer;
+begin
+  Result := 0;
+
+  while (Length(A) > 0) or (Length(B) > 0) do
+  begin
+    DotA := Pos('.', A);
+    if DotA = 0 then DotA := Length(A) + 1;
+    DotB := Pos('.', B);
+    if DotB = 0 then DotB := Length(B) + 1;
+
+    PartA := StrToIntDef(Copy(A, 1, DotA - 1), 0);
+    PartB := StrToIntDef(Copy(B, 1, DotB - 1), 0);
+
+    if PartA > PartB then
+    begin
+      Result := 1;
+      Exit;
+    end;
+    if PartA < PartB then
+    begin
+      Result := -1;
+      Exit;
+    end;
+
+    A := Copy(A, DotA + 1, Length(A));
+    B := Copy(B, DotB + 1, Length(B));
+  end;
+end;
+
+{ Pergunta o que fazer quando o plugin ja esta instalado.
+  False significa "sair sem mexer em nada". }
+function ConfirmReinstall(): Boolean;
+var
+  Cmp: Integer;
+begin
+  Cmp := CompareVersions('{#AppVersion}', InstalledVer);
+
+  if Cmp > 0 then
+  begin
+    { Atualizacao: caminho normal, nao precisa perguntar nada. }
+    Result := True;
+    Exit;
+  end;
+
+  if Cmp = 0 then
+  begin
+    Result := MsgBox('O P2PShare ' + InstalledVer + ' ja esta instalado.' + #13#10 + #13#10 +
+                     'Instalar de novo por cima?',
+                     mbConfirmation, MB_YESNO) = IDYES;
+    Exit;
+  end;
+
+  Result := MsgBox('Voce ja tem o P2PShare ' + InstalledVer + ', que e mais novo ' +
+                   'que o ' + '{#AppVersion}' + ' deste instalador.' + #13#10 + #13#10 +
+                   'Instalar mesmo assim vai REBAIXAR a versao.' + #13#10 + #13#10 +
+                   'Continuar?',
+                   mbConfirmation, MB_YESNO) = IDYES;
+end;
 
 function BetterDiscordPresent(): Boolean;
 begin
@@ -177,6 +284,17 @@ var
 begin
   Result := True;
 
+  InstalledVer := ReadInstalledVersion();
+
+  { Ja instalado: e' atualizacao, nao instalacao nova. Nao faz sentido
+    perguntar sobre Vencord nem sobre instalar o BetterDiscord — os dois
+    ja foram resolvidos quando a pessoa instalou da primeira vez. }
+  if InstalledVer <> '' then
+  begin
+    Result := ConfirmReinstall();
+    Exit;
+  end;
+
   if VencordPresent() then
   begin
     SetArrayLength(Labels, 3);
@@ -240,6 +358,15 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    if InstalledVer <> '' then
+    begin
+      MsgBox('P2PShare atualizado: ' + InstalledVer + ' -> ' + '{#AppVersion}' + '.' + #13#10 + #13#10 +
+             'O BetterDiscord recarrega o plugin sozinho. Se nao recarregar, ' +
+             'desligue e ligue o P2PShare em Configuracoes > Plugins.',
+             mbInformation, MB_OK);
+      Exit;
+    end;
+
     MsgBox('Plugin instalado.' + #13#10 + #13#10 +
            'Falta so ligar ele:' + #13#10 +
            '  1. Reinicie o Discord (feche pela bandeja do sistema tambem)' + #13#10 +

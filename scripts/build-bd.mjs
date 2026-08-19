@@ -94,9 +94,10 @@ if (!iscc) {
     console.log("Para gerá-lo: winget install JRSoftware.InnoSetup");
 } else {
     console.log("\nCompilando o instalador do Windows...");
-    const res = spawnSync(iscc, [resolve(root, "scripts", "installer.iss")], {
-        encoding: "utf8"
-    });
+    const res = spawnSync(iscc, [
+        `/DAppVersion=${pkgVersion}`,
+        resolve(root, "scripts", "installer.iss")
+    ], { encoding: "utf8" });
 
     if (res.status !== 0) {
         console.error(res.stdout || "");
