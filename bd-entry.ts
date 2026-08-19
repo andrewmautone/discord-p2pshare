@@ -127,6 +127,7 @@ export default class P2PShare {
         // Antes de qualquer captura: a tentativa anterior derrubou o Discord?
         checkPreviousCrash();
 
+
         // Instala ou atualiza o componente de áudio em segundo plano. É o
         // caminho por onde quem vinha de uma versão sem ele passa a tê-lo.
         void syncHelper();
