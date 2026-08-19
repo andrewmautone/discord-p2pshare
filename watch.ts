@@ -49,6 +49,10 @@ export async function startWatching(beacon: Beacon): Promise<void> {
     const peer = new ViewerPeer(transport, beacon.broadcasterId);
     watching.set(beacon.sessionId, peer);
 
+    // Sem isto o botão "Assistir" continua no quadro depois do clique: quem
+    // recalcula a interface só era avisado de mudança de beacon.
+    notifyBeacons();
+
     peer.onStream = stream => {
         host.mountOverlay(
             beacon.sessionId,
@@ -87,6 +91,9 @@ export function stopWatching(sessionId: string): void {
     watching.get(sessionId)?.close();
     watching.delete(sessionId);
     host.unmountOverlay(sessionId);
+
+    // A interface precisa saber para trazer o botão de volta.
+    notifyBeacons();
 
     for (const beacon of beacons.values()) {
         if (beacon.sessionId !== sessionId) continue;

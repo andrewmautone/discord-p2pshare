@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.9.0
+ * @version 1.9.1
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -125,7 +125,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.9.0";
+var PLUGIN_VERSION = "1.9.1";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "e48cc114f63f556d1fa4945b24430040cb07a786dc03ef2e9052ed37b6796c72";
@@ -2332,6 +2332,7 @@ async function startWatching(beacon) {
   };
   const peer = new ViewerPeer(transport, beacon.broadcasterId);
   watching.set(beacon.sessionId, peer);
+  notifyBeacons();
   peer.onStream = (stream) => {
     host.mountOverlay(
       beacon.sessionId,
@@ -2360,6 +2361,7 @@ function stopWatching(sessionId) {
   watching.get(sessionId)?.close();
   watching.delete(sessionId);
   host.unmountOverlay(sessionId);
+  notifyBeacons();
   for (const beacon of beacons.values()) {
     if (beacon.sessionId !== sessionId) continue;
     host.announceBeacon(
