@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { toBytes } from "../../binary";
 import { HELPER_SHA256, HELPER_URL } from "../../constants";
 
 declare const BdApi: any;
@@ -221,15 +222,73 @@ function sha256(data: Uint8Array): string {
     return require("crypto").createHash("sha256").update(data).digest("hex");
 }
 
+/**
+ * Lê um arquivo como bytes, sem confiar no encoding padrão.
+ *
+ * O `fs` do BetterDiscord devolve texto UTF-8 quando não se pede encoding, o
+ * que corrompe binário. Aqui cada tentativa é conferida contra o tamanho que
+ * o próprio sistema de arquivos informa: só passa a que devolver a contagem
+ * exata, então um shim que ignore o pedido é descartado em vez de produzir um
+ * hash errado em silêncio.
+ */
+function readBinaryFile(file: string): Uint8Array {
+    const fs = require("fs");
+    const size = fs.statSync(file).size;
+
+    const tentativas = [
+        () => fs.readFileSync(file, { encoding: null }),
+        () => fs.readFileSync(file, "latin1"),
+        () => fs.readFileSync(file)
+    ];
+
+    for (const ler of tentativas) {
+        try {
+            const bytes = toBytes(ler());
+            if (bytes.length === size) return bytes;
+        } catch { /* tenta a próxima forma */ }
+    }
+
+    throw new Error(`não deu para ler ${size} bytes de ${file} sem corromper`);
+}
+
+/**
+ * Por que a última conferência reprovou o arquivo.
+ *
+ * A conferência engolia o motivo: arquivo ausente, hash diferente e exceção
+ * ao ler viravam o mesmo `false`, e a tela só sabia dizer "não instalado".
+ * Com um binário correto em disco sendo recusado, essa distinção é o que
+ * separa investigar de adivinhar.
+ */
+let lastValidityProblem: string | null = null;
+
 /** O arquivo em disco é mesmo o binário que publicamos? */
 function localHelperIsValid(): boolean {
+    let file = "(caminho não resolvido)";
+
     try {
         const fs = require("fs");
-        const file = helperPath();
-        if (!fs.existsSync(file)) return false;
+        file = helperPath();
 
-        return sha256(fs.readFileSync(file)) === HELPER_SHA256;
-    } catch {
+        if (!fs.existsSync(file)) {
+            lastValidityProblem = `não existe: ${file}`;
+            return false;
+        }
+
+        const bytes = readBinaryFile(file);
+        const digest = sha256(bytes);
+
+        if (digest !== HELPER_SHA256) {
+            lastValidityProblem =
+                `hash diferente (${bytes.length} bytes): disco ${digest.slice(0, 12)}, ` +
+                `esperado ${HELPER_SHA256.slice(0, 12)}`;
+            return false;
+        }
+
+        lastValidityProblem = null;
+        return true;
+    } catch (err) {
+        lastValidityProblem =
+            `erro ao conferir ${file}: ${(err as Error)?.message ?? String(err)}`;
         return false;
     }
 }
@@ -334,6 +393,7 @@ function recordDiagnostics(): void {
                 hashEsperado: HELPER_SHA256,
                 pastaDePlugins: BdApi.Plugins.folder,
                 arquivoExiste: helperFileExists(),
+                motivoDaRecusa: lastValidityProblem,
                 erro: lastError
             }, null, 2),
             "utf8"
@@ -367,6 +427,11 @@ export function removeHelper(): boolean {
 
 export async function syncHelper(): Promise<void> {
     if (localHelperIsValid()) return;
+
+    // Registra antes de tentar baixar: se o download der certo, o motivo da
+    // recusa se perde, e é justamente ele que interessa quando o arquivo em
+    // disco parece correto.
+    recordDiagnostics();
 
     const hadOldVersion = helperFileExists();
     const path = await ensureHelper();

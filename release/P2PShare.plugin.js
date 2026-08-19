@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.15.0
+ * @version 1.15.1
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.15.0";
+var PLUGIN_VERSION = "1.15.1";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_TAG = "audio-v1";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
@@ -377,6 +377,14 @@ function onMessageDelete(handler) {
   return () => FluxDispatcher().unsubscribe("MESSAGE_DELETE", listener);
 }
 
+// binary.ts
+function toBytes(data) {
+  if (typeof data !== "string") return new Uint8Array(data);
+  const bytes = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 255;
+  return bytes;
+}
+
 // host/bd/audioHelper.ts
 function attemptMarkerPath() {
   return require("path").join(BdApi.Plugins.folder, ".p2pshare-audio-attempt");
@@ -501,13 +509,43 @@ async function downloadBuffer(url) {
 function sha256(data) {
   return require("crypto").createHash("sha256").update(data).digest("hex");
 }
+function readBinaryFile(file) {
+  const fs = require("fs");
+  const size = fs.statSync(file).size;
+  const tentativas = [
+    () => fs.readFileSync(file, { encoding: null }),
+    () => fs.readFileSync(file, "latin1"),
+    () => fs.readFileSync(file)
+  ];
+  for (const ler of tentativas) {
+    try {
+      const bytes = toBytes(ler());
+      if (bytes.length === size) return bytes;
+    } catch {
+    }
+  }
+  throw new Error(`n\xE3o deu para ler ${size} bytes de ${file} sem corromper`);
+}
+var lastValidityProblem = null;
 function localHelperIsValid() {
+  let file = "(caminho n\xE3o resolvido)";
   try {
     const fs = require("fs");
-    const file = helperPath();
-    if (!fs.existsSync(file)) return false;
-    return sha256(fs.readFileSync(file)) === HELPER_SHA256;
-  } catch {
+    file = helperPath();
+    if (!fs.existsSync(file)) {
+      lastValidityProblem = `n\xE3o existe: ${file}`;
+      return false;
+    }
+    const bytes = readBinaryFile(file);
+    const digest = sha256(bytes);
+    if (digest !== HELPER_SHA256) {
+      lastValidityProblem = `hash diferente (${bytes.length} bytes): disco ${digest.slice(0, 12)}, esperado ${HELPER_SHA256.slice(0, 12)}`;
+      return false;
+    }
+    lastValidityProblem = null;
+    return true;
+  } catch (err) {
+    lastValidityProblem = `erro ao conferir ${file}: ${err?.message ?? String(err)}`;
     return false;
   }
 }
@@ -571,6 +609,7 @@ function recordDiagnostics() {
         hashEsperado: HELPER_SHA256,
         pastaDePlugins: BdApi.Plugins.folder,
         arquivoExiste: helperFileExists(),
+        motivoDaRecusa: lastValidityProblem,
         erro: lastError
       }, null, 2),
       "utf8"
@@ -593,6 +632,7 @@ function removeHelper() {
 }
 async function syncHelper() {
   if (localHelperIsValid()) return;
+  recordDiagnostics();
   const hadOldVersion = helperFileExists();
   const path = await ensureHelper();
   if (path && hadOldVersion) {
