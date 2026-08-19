@@ -15,7 +15,7 @@
   #define AppVersion "0.0.0"
 #endif
 #define AppPublisher "Andrew"
-#define AppUrl       "https://github.com/andrewmautone/vencord-p2pshare"
+#define AppUrl       "https://github.com/andrewmautone/discord-p2pshare"
 #define BdInstaller  "https://github.com/BetterDiscord/Installer/releases/latest/download/BetterDiscord-Windows.exe"
 #define VcInstaller  "https://github.com/Vencord/Installer/releases/latest/download/VencordInstallerCli.exe"
 

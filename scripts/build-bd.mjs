@@ -28,7 +28,7 @@ const META = `/**
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
  * @version ${pkgVersion}
- * @source https://github.com/andrewmautone/vencord-p2pshare
+ * @source https://github.com/andrewmautone/discord-p2pshare
  */
 `;
 

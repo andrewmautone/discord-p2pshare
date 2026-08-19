@@ -2,8 +2,8 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.1.0
- * @source https://github.com/andrewmautone/vencord-p2pshare
+ * @version 1.1.1
+ * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
 var __defProp = Object.defineProperty;
@@ -100,9 +100,9 @@ async function captureScreen(deps = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_URL = "https://github.com/andrewmautone/vencord-p2pshare";
-var PLUGIN_VERSION = "1.1.0";
-var UPDATE_URL = "https://raw.githubusercontent.com/andrewmautone/vencord-p2pshare/main/release/P2PShare.plugin.js";
+var PLUGIN_URL = "https://github.com/andrewmautone/discord-p2pshare";
+var PLUGIN_VERSION = "1.1.1";
+var UPDATE_URL = "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
 var ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun.cloudflare.com:3478" }

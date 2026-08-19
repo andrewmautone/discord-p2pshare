@@ -4,7 +4,7 @@
 seu PC para o de quem assiste — não passa por servidor nenhum, nem o do Discord,
 nem o meu, nem o seu.
 
-[![Versão](https://img.shields.io/github/v/release/andrewmautone/vencord-p2pshare?label=vers%C3%A3o&color=ed4245)](https://github.com/andrewmautone/vencord-p2pshare/releases/latest)
+[![Versão](https://img.shields.io/github/v/release/andrewmautone/discord-p2pshare?label=vers%C3%A3o&color=ed4245)](https://github.com/andrewmautone/discord-p2pshare/releases/latest)
 [![Licença](https://img.shields.io/badge/licen%C3%A7a-GPL--3.0-blue)](#licença)
 [![BetterDiscord](https://img.shields.io/badge/BetterDiscord-plugin-5865f2)](https://betterdiscord.app)
 
@@ -43,7 +43,7 @@ sinalização.
 
 ### Pelo instalador
 
-Baixe o **[P2PShare-Setup.exe](https://github.com/andrewmautone/vencord-p2pshare/releases/latest)**
+Baixe o **[P2PShare-Setup.exe](https://github.com/andrewmautone/discord-p2pshare/releases/latest)**
 e execute. Ele instala o BetterDiscord se você ainda não tiver, e cuida do resto.
 
 > O Windows vai avisar que o programa não é assinado. Clique em
@@ -54,7 +54,7 @@ e execute. Ele instala o BetterDiscord se você ainda não tiver, e cuida do res
 
 Se você já usa BetterDiscord:
 
-1. Baixe o **[P2PShare.plugin.js](https://github.com/andrewmautone/vencord-p2pshare/releases/latest)**
+1. Baixe o **[P2PShare.plugin.js](https://github.com/andrewmautone/discord-p2pshare/releases/latest)**
 2. No Discord: **Configurações → BetterDiscord → Plugins → Open Plugins Folder**
 3. Arraste o arquivo para dentro da pasta
 4. Ligue o **P2PShare** na lista
@@ -136,7 +136,7 @@ protocolo e WebRTC não sabe onde está rodando.
 ```bash
 git clone https://github.com/Vendicated/Vencord
 cd Vencord && pnpm i
-git clone https://github.com/andrewmautone/vencord-p2pshare src/userplugins/p2pShare
+git clone https://github.com/andrewmautone/discord-p2pshare src/userplugins/p2pShare
 
 # testes (runner nativo do Node, sem dependência nova)
 pnpm exec tsx --test src/userplugins/p2pShare/*.test.ts
