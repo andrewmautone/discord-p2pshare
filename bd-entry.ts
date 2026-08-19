@@ -15,7 +15,7 @@ import {
 import { DEFAULT_BUDGET_MBPS } from "./constants";
 import { loadSetting, saveSetting, ui } from "./host/bd";
 import { getCurrentUserId, getCurrentUsername, getUsername } from "./host/bd/api";
-import { downloadHelper, helperReady, listAudioApps } from "./host/bd/audioHelper";
+import { ensureHelper, helperReady, listAudioApps, syncHelper } from "./host/bd/audioHelper";
 import { startUpdateChecks } from "./host/bd/updater";
 import { getActiveBeacons, initWatcher, isWatching, onBeaconsChange, startWatching } from "./watch";
 
@@ -114,6 +114,10 @@ export default class P2PShare {
 
         // Não bloqueia o start: se o host estiver fora do ar, o plugin sobe igual.
         this.cleanupUpdater = startUpdateChecks();
+
+        // Instala ou atualiza o componente de áudio em segundo plano. É o
+        // caminho por onde quem vinha de uma versão sem ele passa a tê-lo.
+        void syncHelper();
 
         // Dá tempo do painel de voz renderizar antes de fotografar o estado.
         setTimeout(() => ui.dumpVoiceDiagnostics(), 8000);
@@ -250,7 +254,7 @@ export default class P2PShare {
         const helperStatus = document.createElement("span");
         const helperBtn = document.createElement("button");
         helperBtn.type = "button";
-        helperBtn.textContent = "Baixar componente";
+        helperBtn.textContent = "Tentar de novo";
         helperBtn.style.cssText =
             "padding:5px 10px;border:none;border-radius:3px;cursor:pointer;" +
             "background:var(--brand-experiment,#5865f2);color:#fff;font-size:12px";
@@ -259,7 +263,8 @@ export default class P2PShare {
             const ready = helperReady();
             helperStatus.textContent = ready
                 ? "Componente de áudio instalado."
-                : "Componente de áudio ainda não instalado — sem ele, os modos acima usam o áudio do sistema.";
+                : "Componente de áudio indisponível — baixando em segundo plano. " +
+                  "Enquanto isso, os modos acima usam o áudio do sistema.";
             helperStatus.style.color = ready
                 ? "var(--text-positive, #23a55a)"
                 : "var(--text-muted, #72767d)";
@@ -269,9 +274,9 @@ export default class P2PShare {
         helperBtn.addEventListener("click", async () => {
             helperBtn.disabled = true;
             helperBtn.textContent = "Baixando…";
-            await downloadHelper();
+            await ensureHelper();
             helperBtn.disabled = false;
-            helperBtn.textContent = "Baixar componente";
+            helperBtn.textContent = "Tentar de novo";
             paintHelper();
         });
 

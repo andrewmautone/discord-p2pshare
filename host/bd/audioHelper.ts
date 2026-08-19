@@ -53,46 +53,31 @@ function localHelperIsValid(): boolean {
     }
 }
 
-function confirmDownload(): Promise<boolean> {
-    return new Promise(resolve => {
-        BdApi.UI.showConfirmationModal(
-            "Baixar o componente de áudio?",
-            "Para transmitir o som sem devolver o áudio do próprio Discord, o " +
-            "P2PShare precisa de um pequeno programa auxiliar (140 KB). Ele é " +
-            "baixado do repositório do projeto e conferido por assinatura " +
-            "antes de ser gravado.\n\n" +
-            "Sem ele, a transmissão usa o áudio do sistema inteiro — o que " +
-            "inclui a chamada de voz.",
-            {
-                confirmText: "Baixar",
-                cancelText: "Usar o áudio do sistema",
-                onConfirm: () => resolve(true),
-                onCancel: () => resolve(false)
-            }
-        );
-    });
-}
-
-/** Já instalado e íntegro? Não pergunta nada, não baixa nada. */
+/** Já instalado e na versão que este plugin espera? */
 export function helperReady(): boolean {
     return localHelperIsValid();
 }
 
+let downloading: Promise<string | null> | null = null;
+
 /**
- * Garante o binário em disco. Devolve o caminho, ou null se não deu.
+ * Garante o binário em disco, baixando se preciso.
  *
- * `prompt: false` é o caminho de quem está transmitindo: ali o componente é
- * um bônus, e parar para perguntar no meio do fluxo atrapalharia o seletor de
- * tela que vem logo depois. Quem pergunta é a tela de configurações.
+ * Não pergunta: o componente é parte do plugin, e o JavaScript que o baixa já
+ * roda com acesso total ao Node — pedir permissão só para o binário seria
+ * teatro. A conferência de SHA-256 continua, que é o que protege de fato
+ * contra um arquivo adulterado no caminho.
+ *
+ * Chamadas simultâneas compartilham o mesmo download.
  */
-export async function ensureHelper(
-    { prompt = true }: { prompt?: boolean; } = {}
-): Promise<string | null> {
-    if (localHelperIsValid()) return helperPath();
-    if (!prompt) return null;
+export function ensureHelper(): Promise<string | null> {
+    if (localHelperIsValid()) return Promise.resolve(helperPath());
 
-    if (!await confirmDownload()) return null;
+    downloading ??= download().finally(() => { downloading = null; });
+    return downloading;
+}
 
+async function download(): Promise<string | null> {
     try {
         const res = await fetch(HELPER_URL, { cache: "no-store" });
         if (!res.ok) throw new Error(`o servidor respondeu ${res.status}`);
@@ -110,20 +95,41 @@ export async function ensureHelper(
         }
 
         require("fs").writeFileSync(helperPath(), buffer);
-        BdApi.UI.showToast("Componente de áudio instalado", { type: "success" });
         return helperPath();
     } catch (err) {
-        BdApi.UI.showToast(
-            `Não deu para baixar o componente de áudio: ${(err as Error).message}`,
-            { type: "error" }
-        );
+        // Sem alarde: o plugin funciona sem o componente, usando o áudio do
+        // sistema. Encher a tela de erro por algo que se recupera sozinho na
+        // próxima abertura só assusta.
+        console.warn("[P2PShare] não deu para baixar o componente de áudio", err);
         return null;
     }
 }
 
-/** Baixa sob pedido explícito, a partir das configurações. */
-export function downloadHelper(): Promise<string | null> {
-    return ensureHelper({ prompt: true });
+/**
+ * Instala ou atualiza o componente, em segundo plano.
+ *
+ * Roda na inicialização. É por aqui que quem vinha de uma versão sem o
+ * componente passa a tê-lo: o plugin se atualiza sozinho, e o JavaScript novo
+ * traz o hash novo, que não bate com o que está em disco — ou com a ausência
+ * dele — e dispara a busca.
+ */
+export async function syncHelper(): Promise<void> {
+    if (localHelperIsValid()) return;
+
+    const hadOldVersion = helperFileExists();
+    const path = await ensureHelper();
+
+    if (path && hadOldVersion) {
+        console.info("[P2PShare] componente de áudio atualizado");
+    }
+}
+
+function helperFileExists(): boolean {
+    try {
+        return require("fs").existsSync(helperPath());
+    } catch {
+        return false;
+    }
 }
 
 export interface AudioApp {
@@ -139,7 +145,7 @@ export interface AudioApp {
  * executável, não pelo PID, que muda a cada abertura.
  */
 export async function listAudioApps(): Promise<AudioApp[]> {
-    const exe = await ensureHelper({ prompt: false });
+    const exe = await ensureHelper();
     if (!exe) return [];
 
     return new Promise(resolve => {
@@ -223,9 +229,8 @@ async function helperArgs(request: IsolationRequest): Promise<string[] | null> {
 export async function captureIsolatedAudio(
     request: IsolationRequest = { mode: "discord" }
 ): Promise<IsolatedAudio | null> {
-    // Sem prompt: transmitir não é hora de instalar nada. Faltando o
-    // componente, o áudio do sistema entra no lugar sem alarde.
-    const exe = await ensureHelper({ prompt: false });
+    // Faltando o componente, o áudio do sistema entra no lugar sem alarde.
+    const exe = await ensureHelper();
     if (!exe) {
         console.info("[P2PShare] componente de áudio ausente, usando o áudio do sistema");
         return null;

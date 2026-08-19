@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.8.1
+ * @version 1.9.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -125,9 +125,9 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.8.1";
+var PLUGIN_VERSION = "1.9.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
-var HELPER_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/p2pshare-audio.exe";
+var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "e48cc114f63f556d1fa4945b24430040cb07a786dc03ef2e9052ed37b6796c72";
 var UPDATE_URL = "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
 var ICE_SERVERS = [
@@ -391,27 +391,18 @@ function localHelperIsValid() {
     return false;
   }
 }
-function confirmDownload() {
-  return new Promise((resolve) => {
-    BdApi.UI.showConfirmationModal(
-      "Baixar o componente de \xE1udio?",
-      "Para transmitir o som sem devolver o \xE1udio do pr\xF3prio Discord, o P2PShare precisa de um pequeno programa auxiliar (140 KB). Ele \xE9 baixado do reposit\xF3rio do projeto e conferido por assinatura antes de ser gravado.\n\nSem ele, a transmiss\xE3o usa o \xE1udio do sistema inteiro \u2014 o que inclui a chamada de voz.",
-      {
-        confirmText: "Baixar",
-        cancelText: "Usar o \xE1udio do sistema",
-        onConfirm: () => resolve(true),
-        onCancel: () => resolve(false)
-      }
-    );
-  });
-}
 function helperReady() {
   return localHelperIsValid();
 }
-async function ensureHelper({ prompt = true } = {}) {
-  if (localHelperIsValid()) return helperPath();
-  if (!prompt) return null;
-  if (!await confirmDownload()) return null;
+var downloading = null;
+function ensureHelper() {
+  if (localHelperIsValid()) return Promise.resolve(helperPath());
+  downloading ??= download().finally(() => {
+    downloading = null;
+  });
+  return downloading;
+}
+async function download() {
   try {
     const res = await fetch(HELPER_URL, { cache: "no-store" });
     if (!res.ok) throw new Error(`o servidor respondeu ${res.status}`);
@@ -423,21 +414,29 @@ async function ensureHelper({ prompt = true } = {}) {
       );
     }
     require("fs").writeFileSync(helperPath(), buffer);
-    BdApi.UI.showToast("Componente de \xE1udio instalado", { type: "success" });
     return helperPath();
   } catch (err) {
-    BdApi.UI.showToast(
-      `N\xE3o deu para baixar o componente de \xE1udio: ${err.message}`,
-      { type: "error" }
-    );
+    console.warn("[P2PShare] n\xE3o deu para baixar o componente de \xE1udio", err);
     return null;
   }
 }
-function downloadHelper() {
-  return ensureHelper({ prompt: true });
+async function syncHelper() {
+  if (localHelperIsValid()) return;
+  const hadOldVersion = helperFileExists();
+  const path = await ensureHelper();
+  if (path && hadOldVersion) {
+    console.info("[P2PShare] componente de \xE1udio atualizado");
+  }
+}
+function helperFileExists() {
+  try {
+    return require("fs").existsSync(helperPath());
+  } catch {
+    return false;
+  }
 }
 async function listAudioApps() {
-  const exe = await ensureHelper({ prompt: false });
+  const exe = await ensureHelper();
   if (!exe) return [];
   return new Promise((resolve) => {
     try {
@@ -478,7 +477,7 @@ async function helperArgs(request) {
   return ["--include", String(app.pid)];
 }
 async function captureIsolatedAudio(request = { mode: "discord" }) {
-  const exe = await ensureHelper({ prompt: false });
+  const exe = await ensureHelper();
   if (!exe) {
     console.info("[P2PShare] componente de \xE1udio ausente, usando o \xE1udio do sistema");
     return null;
@@ -2572,6 +2571,7 @@ var P2PShare = class {
       refreshLive();
     });
     this.cleanupUpdater = startUpdateChecks();
+    void syncHelper();
     setTimeout(() => ui_exports.dumpVoiceDiagnostics(), 8e3);
   }
   stop() {
@@ -2660,20 +2660,20 @@ var P2PShare = class {
     const helperStatus = document.createElement("span");
     const helperBtn = document.createElement("button");
     helperBtn.type = "button";
-    helperBtn.textContent = "Baixar componente";
+    helperBtn.textContent = "Tentar de novo";
     helperBtn.style.cssText = "padding:5px 10px;border:none;border-radius:3px;cursor:pointer;background:var(--brand-experiment,#5865f2);color:#fff;font-size:12px";
     const paintHelper = () => {
       const ready = helperReady();
-      helperStatus.textContent = ready ? "Componente de \xE1udio instalado." : "Componente de \xE1udio ainda n\xE3o instalado \u2014 sem ele, os modos acima usam o \xE1udio do sistema.";
+      helperStatus.textContent = ready ? "Componente de \xE1udio instalado." : "Componente de \xE1udio indispon\xEDvel \u2014 baixando em segundo plano. Enquanto isso, os modos acima usam o \xE1udio do sistema.";
       helperStatus.style.color = ready ? "var(--text-positive, #23a55a)" : "var(--text-muted, #72767d)";
       helperBtn.style.display = ready ? "none" : "";
     };
     helperBtn.addEventListener("click", async () => {
       helperBtn.disabled = true;
       helperBtn.textContent = "Baixando\u2026";
-      await downloadHelper();
+      await ensureHelper();
       helperBtn.disabled = false;
-      helperBtn.textContent = "Baixar componente";
+      helperBtn.textContent = "Tentar de novo";
       paintHelper();
     });
     helperRow.append(helperStatus, helperBtn);

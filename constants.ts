@@ -9,7 +9,7 @@ export const PROTOCOL_VERSION = 1;
 export const PLUGIN_URL = "https://github.com/andrewmautone/discord-p2pshare";
 
 /** Versão publicada. O build do BetterDiscord escreve isto no cabeçalho. */
-export const PLUGIN_VERSION = "1.8.1";
+export const PLUGIN_VERSION = "1.9.0";
 
 /** Link direto do instalador na release mais recente. */
 export const DOWNLOAD_URL =
@@ -21,9 +21,15 @@ export const DOWNLOAD_URL =
  * Aponta para o arquivo cru publicado — um raw do GitHub ou de um Gist serve.
  * String vazia desliga a checagem por completo.
  */
-/** Executável auxiliar que captura o áudio do sistema sem o Discord. */
+/**
+ * Executável auxiliar que captura o áudio do sistema sem o Discord.
+ *
+ * Preso à versão deste plugin, e não a `latest`: o binário é conferido contra
+ * o hash abaixo, e apontar para a release mais recente faria um plugin antigo
+ * baixar um arquivo que ele mesmo recusaria.
+ */
 export const HELPER_URL =
-    "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/p2pshare-audio.exe";
+    `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 
 /**
  * SHA-256 do auxiliar publicado.
