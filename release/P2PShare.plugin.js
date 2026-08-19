@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.9.5
+ * @version 1.10.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -125,7 +125,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.9.5";
+var PLUGIN_VERSION = "1.10.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "e48cc114f63f556d1fa4945b24430040cb07a786dc03ef2e9052ed37b6796c72";
@@ -370,35 +370,61 @@ function onMessageDelete(handler) {
 }
 
 // host/bd/audioHelper.ts
-var cachedRequire;
-function nodeRequire(name) {
-  if (cachedRequire === void 0) {
-    const candidates = [
-      () => window.process?.mainModule?.require?.bind(
-        window.process.mainModule
-      ),
-      () => globalThis.require,
-      () => window.require
-    ];
-    cachedRequire = null;
-    for (const get of candidates) {
+function spawnHelper(exe, args) {
+  const { Process } = process.binding("process_wrap");
+  const pipeWrap = process.binding("pipe_wrap");
+  const stdout = new pipeWrap.Pipe(pipeWrap.constants.SOCKET);
+  const child = new Process();
+  let onData = () => {
+  };
+  let onExit = () => {
+  };
+  let alive = true;
+  stdout.onread = (first, second) => {
+    const data = typeof first === "number" ? second : first;
+    if (data && data.byteLength) onData(new Uint8Array(data));
+  };
+  child.onexit = () => {
+    alive = false;
+    onExit();
+  };
+  const code = child.spawn({
+    file: exe,
+    // argv[0] é o próprio programa, como todo processo espera.
+    args: [exe, ...args],
+    cwd: void 0,
+    windowsHide: true,
+    windowsVerbatimArguments: false,
+    detached: false,
+    envPairs: Object.entries(process.env).map(([k, v]) => `${k}=${v}`),
+    stdio: [
+      { type: "ignore" },
+      { type: "pipe", handle: stdout, readable: false, writable: true },
+      { type: "ignore" }
+    ]
+  });
+  if (code !== 0) throw new Error(`n\xE3o deu para iniciar o componente (c\xF3digo ${code})`);
+  stdout.readStart();
+  return {
+    onData: (handler) => {
+      onData = handler;
+    },
+    onExit: (handler) => {
+      onExit = handler;
+    },
+    kill: () => {
+      if (!alive) return;
+      alive = false;
       try {
-        const candidate = get();
-        candidate?.("child_process");
-        if (candidate) {
-          cachedRequire = candidate;
-          break;
-        }
+        child.kill();
+      } catch {
+      }
+      try {
+        stdout.close();
       } catch {
       }
     }
-  }
-  if (!cachedRequire) {
-    throw new Error(
-      "n\xE3o achei um require do Node capaz de carregar m\xF3dulos al\xE9m da lista do BetterDiscord"
-    );
-  }
-  return cachedRequire(name);
+  };
 }
 var HELPER_NAME = "p2pshare-audio.exe";
 var SAMPLE_RATE = 48e3;
@@ -469,7 +495,6 @@ function recordDiagnostics() {
       path.join(BdApi.Plugins.folder, "p2pshare-audio-debug.json"),
       JSON.stringify({
         quando: (/* @__PURE__ */ new Date()).toISOString(),
-        requireDoNode: cachedRequire ? "encontrado" : "indispon\xEDvel",
         url: HELPER_URL,
         hashEsperado: HELPER_SHA256,
         pastaDePlugins: BdApi.Plugins.folder,
@@ -502,20 +527,20 @@ async function listAudioApps() {
   if (!exe) return [];
   return new Promise((resolve) => {
     try {
-      const child = nodeRequire("child_process").spawn(exe, ["--list"], { windowsHide: true });
+      const child = spawnHelper(exe, ["--list"]);
       let out = "";
-      child.stdout.on("data", (d) => {
+      child.onData((d) => {
         out += new TextDecoder().decode(d);
       });
-      child.on("close", () => {
+      child.onExit(() => {
         try {
           resolve(JSON.parse(out.trim() || "[]"));
         } catch {
           resolve([]);
         }
       });
-      child.on("error", () => resolve([]));
-    } catch {
+    } catch (err) {
+      console.warn("[P2PShare] n\xE3o deu para listar os programas com \xE1udio", err);
       resolve([]);
     }
   });
@@ -547,7 +572,7 @@ async function captureIsolatedAudio(request = { mode: "discord" }) {
   const args = await helperArgs(request);
   if (!args) return null;
   try {
-    const child = nodeRequire("child_process").spawn(exe, args, { windowsHide: true });
+    const child = spawnHelper(exe, args);
     const context = new AudioContext({ sampleRate: SAMPLE_RATE });
     const destination = context.createMediaStreamDestination();
     const ring = new Float32Array(RING_FRAMES * CHANNELS);
@@ -555,7 +580,7 @@ async function captureIsolatedAudio(request = { mode: "discord" }) {
     let readAt = 0;
     let available = 0;
     let leftover = new Uint8Array(0);
-    child.stdout.on("data", (chunk) => {
+    child.onData((chunk) => {
       let buf = chunk;
       if (leftover.length) {
         buf = new Uint8Array(leftover.length + chunk.length);
@@ -572,8 +597,6 @@ async function captureIsolatedAudio(request = { mode: "discord" }) {
         else readAt = (readAt + 1) % ring.length;
       }
     });
-    child.stderr.on("data", (d) => console.debug("[P2PShare] helper:", new TextDecoder().decode(d).trim()));
-    child.on("error", (err) => console.error("[P2PShare] helper falhou ao iniciar", err));
     const node = context.createScriptProcessor(1024, 0, CHANNELS);
     node.onaudioprocess = (event) => {
       const left = event.outputBuffer.getChannelData(0);
@@ -594,14 +617,11 @@ async function captureIsolatedAudio(request = { mode: "discord" }) {
     const track = destination.stream.getAudioTracks()[0];
     if (!track) throw new Error("o contexto de \xE1udio n\xE3o produziu trilha");
     const stop = () => {
-      try {
-        child.kill();
-      } catch {
-      }
+      child.kill();
       node.disconnect();
       void context.close();
     };
-    child.on("exit", () => {
+    child.onExit(() => {
       node.onaudioprocess = null;
     });
     return { track, stop };

@@ -26,51 +26,81 @@ declare const BdApi: any;
  */
 
 /**
- * `require` do Node de verdade.
+ * Inicia um processo sem `child_process`.
  *
- * O do BetterDiscord atende uma lista fixa de módulos — fs, path, electron,
- * process, vm — e o que estiver fora dela ele tenta resolver como caminho de
- * arquivo, falhando com ENOENT. `child_process` está fora dessa lista.
+ * O `require` do BetterDiscord atende uma lista fixa de módulos e tenta
+ * resolver o resto como caminho de arquivo — `child_process` fica de fora, e
+ * a falha aparece como um ENOENT apontando para dentro da pasta do Discord.
+ * O `process.mainModule`, que daria o require original, não existe no
+ * renderer do Discord.
  *
- * O `process` do renderer é o do Node, e o módulo principal dele carrega o
- * require original, sem filtro. As alternativas ficam como reserva porque a
- * forma de alcançá-lo já mudou entre versões do Electron.
+ * Sobram as ligações de baixo nível, que continuam acessíveis: são as mesmas
+ * que o próprio `child_process` usa por baixo. Verificado antes de escrever
+ * isto — spawn retorna 0 e o stdout chega inteiro.
  */
-let cachedRequire: ((name: string) => any) | null | undefined;
+export interface HelperProcess {
+    onData(handler: (data: Uint8Array) => void): void;
+    onExit(handler: () => void): void;
+    kill(): void;
+}
 
-function nodeRequire(name: string): any {
-    if (cachedRequire === undefined) {
-        const candidates: (() => ((n: string) => any) | undefined)[] = [
-            () => (window as any).process?.mainModule?.require?.bind(
-                (window as any).process.mainModule),
-            () => (globalThis as any).require,
-            () => (window as any).require
-        ];
+function spawnHelper(exe: string, args: string[]): HelperProcess {
+    const { Process } = (process as any).binding("process_wrap");
+    const pipeWrap = (process as any).binding("pipe_wrap");
 
-        cachedRequire = null;
-        for (const get of candidates) {
+    const stdout = new pipeWrap.Pipe(pipeWrap.constants.SOCKET);
+    const child = new Process();
+
+    let onData: (data: Uint8Array) => void = () => { };
+    let onExit: () => void = () => { };
+    let alive = true;
+
+    // A assinatura mudou entre versões do Node: ora o buffer vem no primeiro
+    // argumento, ora no segundo com a contagem no primeiro.
+    stdout.onread = (first: unknown, second?: Uint8Array) => {
+        const data = typeof first === "number" ? second : (first as Uint8Array);
+        if (data && data.byteLength) onData(new Uint8Array(data));
+    };
+
+    child.onexit = () => {
+        alive = false;
+        onExit();
+    };
+
+    const code = child.spawn({
+        file: exe,
+        // argv[0] é o próprio programa, como todo processo espera.
+        args: [exe, ...args],
+        cwd: undefined,
+        windowsHide: true,
+        windowsVerbatimArguments: false,
+        detached: false,
+        envPairs: Object.entries(process.env).map(([k, v]) => `${k}=${v}`),
+        stdio: [
+            { type: "ignore" },
+            { type: "pipe", handle: stdout, readable: false, writable: true },
+            { type: "ignore" }
+        ]
+    });
+
+    if (code !== 0) throw new Error(`não deu para iniciar o componente (código ${code})`);
+
+    stdout.readStart();
+
+    return {
+        onData: handler => { onData = handler; },
+        onExit: handler => { onExit = handler; },
+        kill: () => {
+            if (!alive) return;
+            alive = false;
             try {
-                const candidate = get();
-                // Só serve se der conta do módulo que o do BD não dá.
-                candidate?.("child_process");
-                if (candidate) {
-                    cachedRequire = candidate;
-                    break;
-                }
-            } catch {
-                // tenta o próximo
-            }
+                child.kill();
+            } catch { /* já morreu */ }
+            try {
+                stdout.close();
+            } catch { /* idem */ }
         }
-    }
-
-    if (!cachedRequire) {
-        throw new Error(
-            "não achei um require do Node capaz de carregar módulos além da " +
-            "lista do BetterDiscord"
-        );
-    }
-
-    return cachedRequire(name);
+    };
 }
 
 const HELPER_NAME = "p2pshare-audio.exe";
@@ -200,7 +230,6 @@ function recordDiagnostics(): void {
             path.join(BdApi.Plugins.folder, "p2pshare-audio-debug.json"),
             JSON.stringify({
                 quando: new Date().toISOString(),
-                requireDoNode: cachedRequire ? "encontrado" : "indisponível",
                 url: HELPER_URL,
                 hashEsperado: HELPER_SHA256,
                 pastaDePlugins: BdApi.Plugins.folder,
@@ -259,23 +288,19 @@ export async function listAudioApps(): Promise<AudioApp[]> {
 
     return new Promise(resolve => {
         try {
-            const child = nodeRequire("child_process").spawn(exe, ["--list"], { windowsHide: true });
+            const child = spawnHelper(exe, ["--list"]);
 
             let out = "";
-            child.stdout.on("data", (d: Uint8Array) => {
-                out += new TextDecoder().decode(d);
-            });
-
-            child.on("close", () => {
+            child.onData(d => { out += new TextDecoder().decode(d); });
+            child.onExit(() => {
                 try {
                     resolve(JSON.parse(out.trim() || "[]"));
                 } catch {
                     resolve([]);
                 }
             });
-
-            child.on("error", () => resolve([]));
-        } catch {
+        } catch (err) {
+            console.warn("[P2PShare] não deu para listar os programas com áudio", err);
             resolve([]);
         }
     });
@@ -351,7 +376,7 @@ export async function captureIsolatedAudio(
     if (!args) return null;
 
     try {
-        const child = nodeRequire("child_process").spawn(exe, args, { windowsHide: true });
+        const child = spawnHelper(exe, args);
 
         const context = new AudioContext({ sampleRate: SAMPLE_RATE });
         const destination = context.createMediaStreamDestination();
@@ -367,7 +392,7 @@ export async function captureIsolatedAudio(
         // o próximo pedaço. Sem isso o áudio vira ruído.
         let leftover = new Uint8Array(0);
 
-        child.stdout.on("data", (chunk: Uint8Array) => {
+        child.onData(chunk => {
             let buf = chunk;
             if (leftover.length) {
                 buf = new Uint8Array(leftover.length + chunk.length);
@@ -389,12 +414,6 @@ export async function captureIsolatedAudio(
                 else readAt = (readAt + 1) % ring.length; // descarta o mais velho
             }
         });
-
-        child.stderr.on("data", (d: Uint8Array) =>
-            console.debug("[P2PShare] helper:", new TextDecoder().decode(d).trim()));
-
-        child.on("error", (err: Error) =>
-            console.error("[P2PShare] helper falhou ao iniciar", err));
 
         // ScriptProcessor é depreciado, mas AudioWorklet exige carregar um
         // módulo por URL, e a política de conteúdo do Discord bloqueia isso.
@@ -424,15 +443,13 @@ export async function captureIsolatedAudio(
         if (!track) throw new Error("o contexto de áudio não produziu trilha");
 
         const stop = () => {
-            try {
-                child.kill();
-            } catch { /* já morreu */ }
+            child.kill();
             node.disconnect();
             void context.close();
         };
 
         // Se o helper morrer sozinho, não deixar o contexto pendurado.
-        child.on("exit", () => {
+        child.onExit(() => {
             node.onaudioprocess = null;
         });
 
