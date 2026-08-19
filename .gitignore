@@ -5,3 +5,6 @@ node_modules/
 # então precisa estar versionado. O instalador (2 MB) vai para Releases.
 release/*
 !release/P2PShare.plugin.js
+
+# Artefatos do Rust
+native/audio-helper/target/

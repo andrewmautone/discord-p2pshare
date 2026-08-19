@@ -15,6 +15,7 @@ import {
 import { DEFAULT_BUDGET_MBPS } from "./constants";
 import { loadSetting, saveSetting, ui } from "./host/bd";
 import { getCurrentUserId, getCurrentUsername, getUsername } from "./host/bd/api";
+import { downloadHelper, helperReady, listAudioApps } from "./host/bd/audioHelper";
 import { startUpdateChecks } from "./host/bd/updater";
 import { getActiveBeacons, initWatcher, isWatching, onBeaconsChange, startWatching } from "./watch";
 
@@ -209,49 +210,144 @@ export default class P2PShare {
         audioHint.style.cssText =
             "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
 
-        const devLabel = document.createElement("div");
-        devLabel.textContent = "Fonte do áudio";
-        devLabel.style.cssText = "margin-top:20px;margin-bottom:4px";
+        const modeLabel = document.createElement("div");
+        modeLabel.textContent = "Áudio da transmissão";
+        modeLabel.style.cssText = "margin-top:20px;margin-bottom:4px";
 
-        const devHint = document.createElement("div");
-        devHint.textContent =
-            "O Windows não deixa capturar o áudio de um app só. Para transmitir " +
-            "apenas o jogo, roteie ele para um cabo virtual (VB-Cable) no mixer " +
-            "de volume e escolha esse dispositivo aqui.";
-        devHint.style.cssText =
+        const modeHint = document.createElement("div");
+        modeHint.textContent =
+            "O Windows não deixa o navegador capturar o áudio de um app só — " +
+            "o loopback comum traz a máquina inteira, o Discord junto, e quem " +
+            "assiste ouve a chamada de volta. O modo sem o Discord usa um " +
+            "programa auxiliar (140 KB) que o plugin baixa na primeira vez, " +
+            "com sua confirmação.";
+        modeHint.style.cssText =
             "font-size:12px;color:var(--text-muted,#72767d);margin-bottom:8px";
 
-        const select = document.createElement("select");
-        select.style.cssText =
+        const mode = document.createElement("select");
+        mode.style.cssText =
             "width:100%;padding:6px;background:var(--input-background,#1e1f22);" +
             "color:inherit;border:1px solid var(--background-tertiary,#202225);border-radius:4px";
 
-        const saved = loadSetting<string | null>("audioDeviceId", null);
-        const addOption = (value: string, text: string) => {
-            const o = document.createElement("option");
-            o.value = value;
-            o.textContent = text;
-            o.selected = (value || null) === saved;
-            select.appendChild(o);
+        const currentMode = loadSetting("audioMode", "isolated");
+        for (const [value, text] of [
+            ["isolated", "Sem o áudio do Discord (recomendado)"],
+            ["app", "Apenas um programa"],
+            ["system", "Sistema inteiro, Discord incluído"]
+        ] as [string, string][]) {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = text;
+            option.selected = value === currentMode;
+            mode.appendChild(option);
+        }
+
+        // Estado do componente nativo, com o botão de instalar do lado.
+        const helperRow = document.createElement("div");
+        helperRow.style.cssText =
+            "display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12px";
+
+        const helperStatus = document.createElement("span");
+        const helperBtn = document.createElement("button");
+        helperBtn.type = "button";
+        helperBtn.textContent = "Baixar componente";
+        helperBtn.style.cssText =
+            "padding:5px 10px;border:none;border-radius:3px;cursor:pointer;" +
+            "background:var(--brand-experiment,#5865f2);color:#fff;font-size:12px";
+
+        const paintHelper = () => {
+            const ready = helperReady();
+            helperStatus.textContent = ready
+                ? "Componente de áudio instalado."
+                : "Componente de áudio ainda não instalado — sem ele, os modos acima usam o áudio do sistema.";
+            helperStatus.style.color = ready
+                ? "var(--text-positive, #23a55a)"
+                : "var(--text-muted, #72767d)";
+            helperBtn.style.display = ready ? "none" : "";
         };
 
-        addOption("", "Áudio do sistema (inclui o Discord)");
-        select.addEventListener("change", () =>
-            saveSetting("audioDeviceId", select.value || null));
+        helperBtn.addEventListener("click", async () => {
+            helperBtn.disabled = true;
+            helperBtn.textContent = "Baixando…";
+            await downloadHelper();
+            helperBtn.disabled = false;
+            helperBtn.textContent = "Baixar componente";
+            paintHelper();
+        });
 
-        // enumerateDevices só revela os nomes depois de uma permissão de áudio;
-        // sem ela o navegador devolve rótulos vazios.
-        navigator.mediaDevices.enumerateDevices()
-            .then(devices => {
-                for (const d of devices) {
-                    if (d.kind !== "audioinput") continue;
-                    addOption(d.deviceId, d.label || `Entrada ${d.deviceId.slice(0, 8)}`);
-                }
-            })
-            .catch(err => console.warn("[P2PShare] não deu para listar dispositivos", err));
+        helperRow.append(helperStatus, helperBtn);
+        paintHelper();
+
+        // Seletor do programa, visível só no modo correspondente.
+        const appRow = document.createElement("div");
+        appRow.style.marginTop = "10px";
+
+        const appSelect = document.createElement("select");
+        appSelect.style.cssText = mode.style.cssText;
+
+        const appHint = document.createElement("div");
+        appHint.textContent =
+            "A lista mostra os programas que estão emitindo som agora — um jogo " +
+            "que ainda não tocou nada não aparece. A escolha é guardada pelo nome " +
+            "do executável, então continua valendo depois de fechar e abrir.";
+        appHint.style.cssText =
+            "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
+
+        const savedApp = loadSetting<string | null>("audioApp", null);
+
+        const fillApps = async () => {
+            appSelect.textContent = "";
+
+            const placeholder = document.createElement("option");
+            placeholder.value = "";
+            placeholder.textContent = "Procurando programas com som…";
+            appSelect.appendChild(placeholder);
+
+            const apps = await listAudioApps();
+            appSelect.textContent = "";
+
+            if (!apps.length) {
+                const empty = document.createElement("option");
+                empty.value = "";
+                empty.textContent = "Nenhum programa tocando som agora";
+                appSelect.appendChild(empty);
+                return;
+            }
+
+            // O próprio Discord na lista só serviria para trazer o eco de volta.
+            for (const app of apps.filter(a => !/discord/i.test(a.name))) {
+                const option = document.createElement("option");
+                option.value = app.name;
+                option.textContent = app.name;
+                option.selected = app.name === savedApp;
+                appSelect.appendChild(option);
+            }
+        };
+
+        appSelect.addEventListener("change", () =>
+            saveSetting("audioApp", appSelect.value || null));
+
+        // Reabrir a lista ao focar: entre abrir as configurações e escolher, o
+        // usuário pode ter ligado o jogo.
+        appSelect.addEventListener("focus", () => { void fillApps(); });
+
+        appRow.append(appSelect, appHint);
+
+        const syncAppRow = () => {
+            appRow.style.display = mode.value === "app" ? "" : "none";
+            helperRow.style.display = mode.value === "system" ? "none" : "";
+            if (mode.value === "app") void fillApps();
+        };
+
+        mode.addEventListener("change", () => {
+            saveSetting("audioMode", mode.value);
+            syncAppRow();
+        });
+
+        syncAppRow();
 
         wrap.append(label, hint, slider, auto, autoHint, audio, audioHint,
-            devLabel, devHint, select);
+            modeLabel, modeHint, mode, helperRow, appRow);
         return wrap;
     }
 }

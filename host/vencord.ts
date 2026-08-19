@@ -49,6 +49,8 @@ export const host: Host = {
     getBudgetMbps: () => settings.store.uploadBudgetMbps,
     shouldCaptureAudio: () => settings.store.captureAudio,
     getAudioDeviceId: () => settings.store.audioDeviceId || null,
+    // O auxiliar nativo hoje só é distribuído com a versão BetterDiscord.
+    captureIsolatedAudio: () => Promise.resolve(null),
     pickSource: openSourcePicker,
 
     mountOverlay,

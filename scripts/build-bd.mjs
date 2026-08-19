@@ -5,6 +5,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -56,13 +57,30 @@ await build({
     legalComments: "none",
     logLevel: "info",
     plugins: [swapHost],
+    // O plugin roda no renderer do Electron, onde os módulos do Node existem
+    // em tempo de execução. Empacotá-los é impossível e desnecessário.
+    external: ["fs", "path", "crypto", "child_process", "os", "electron"],
     // esbuild exporta { default: P2PShare }; o BetterDiscord espera a classe
     // direto em module.exports.
     footer: { js: "module.exports = module.exports.default;" }
 });
 
+// O plugin confere o auxiliar nativo por SHA-256 antes de executá-lo, e o
+// hash tem que ser o do binário que vai junto da release — deixá-lo escrito à
+// mão em constants.ts divergiria na primeira recompilação do Rust.
+const helperExe = resolve(root, "native/audio-helper/target/release/p2pshare-audio.exe");
+let helperHash = "";
+try {
+    helperHash = createHash("sha256").update(await readFile(helperExe)).digest("hex");
+    await copyFile(helperExe, resolve(outDir, "p2pshare-audio.exe"));
+    console.log(`auxiliar de áudio: ${helperHash.slice(0, 16)}…`);
+} catch {
+    console.warn("aviso: auxiliar de áudio não compilado — rode cargo build --release em native/audio-helper");
+}
+
 // Prefixa o cabeçalho que o BetterDiscord lê para nome, autor e versão.
-const bundled = await readFile(outFile, "utf8");
+let bundled = await readFile(outFile, "utf8");
+bundled = bundled.replace("__HELPER_SHA256__", helperHash);
 await writeFile(outFile, META + bundled, "utf8");
 
 // Só o plugin e as instruções. Nada de script: o BetterDiscord já instala

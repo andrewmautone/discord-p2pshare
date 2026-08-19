@@ -12,6 +12,8 @@ import { observeSignals, postBeacon, removeBeacon, sendHandshake } from "./signa
 
 interface Session {
     sessionId: string;
+    /** Encerra o auxiliar de áudio, quando houver. */
+    stopAudio?: () => void;
     channelId: string;
     beaconId: string;
     stream: MediaStream;
@@ -115,16 +117,24 @@ export async function startBroadcast(): Promise<void> {
         return;
     }
 
+    // Tenta o áudio sem o Discord antes de capturar: se o auxiliar não
+    // estiver disponível, cai para o loopback comum sem interromper nada.
+    const isolated = host.shouldCaptureAudio()
+        ? await host.captureIsolatedAudio()
+        : null;
+
     let stream: MediaStream;
     try {
         stream = await captureScreen(
             { pickSource: host.pickSource },
             {
                 audio: host.shouldCaptureAudio(),
-                audioDeviceId: host.getAudioDeviceId()
+                audioDeviceId: host.getAudioDeviceId(),
+                audioTrack: isolated?.track ?? null
             }
         );
     } catch (err) {
+        isolated?.stop();
         host.toast(
             err instanceof CaptureError
                 ? err.message
@@ -192,11 +202,15 @@ export async function startBroadcast(): Promise<void> {
         unwatchExit();
         unsubscribe();
         stream.getTracks().forEach(track => track.stop());
+        isolated?.stop();
         host.toast(`não deu para anunciar a transmissão: ${(err as Error).message}`, "error");
         return;
     }
 
-    session = { sessionId, channelId, beaconId, stream, peers, unsubscribe, unwatchExit };
+    session = {
+        sessionId, channelId, beaconId, stream, peers, unsubscribe, unwatchExit,
+        stopAudio: isolated?.stop
+    };
     // Reaplica a escolha anterior: quem baixou para 720p não quer voltar
     // para 1440p só porque reiniciou a transmissão.
     setQuality(quality);
@@ -232,6 +246,7 @@ export async function stopBroadcast(): Promise<void> {
     current.unsubscribe();
     current.peers.closeAll();
     current.stream.getTracks().forEach(track => track.stop());
+    current.stopAudio?.();
 
     try {
         await removeBeacon(current.channelId, current.beaconId);

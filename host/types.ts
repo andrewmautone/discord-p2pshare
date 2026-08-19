@@ -97,6 +97,14 @@ export interface Host {
      * Serve para transmitir só o áudio de um app roteado a um cabo virtual.
      */
     getAudioDeviceId(): string | null;
+
+    /**
+     * Áudio do sistema sem o próprio Discord dentro.
+     *
+     * Devolve null quando não há como isolar — aí quem chama segue com o
+     * loopback comum, que é pior mas funciona.
+     */
+    captureIsolatedAudio(): Promise<{ track: MediaStreamTrack; stop: () => void; } | null>;
     /** Abre o seletor de tela/janela. Resolve com null se o usuário cancelar. */
     pickSource(sources: CaptureSource[]): Promise<string | null>;
 
