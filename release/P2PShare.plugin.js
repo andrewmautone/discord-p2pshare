@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.9.3
+ * @version 1.9.5
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -125,7 +125,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.9.3";
+var PLUGIN_VERSION = "1.9.5";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "e48cc114f63f556d1fa4945b24430040cb07a786dc03ef2e9052ed37b6796c72";
@@ -370,6 +370,36 @@ function onMessageDelete(handler) {
 }
 
 // host/bd/audioHelper.ts
+var cachedRequire;
+function nodeRequire(name) {
+  if (cachedRequire === void 0) {
+    const candidates = [
+      () => window.process?.mainModule?.require?.bind(
+        window.process.mainModule
+      ),
+      () => globalThis.require,
+      () => window.require
+    ];
+    cachedRequire = null;
+    for (const get of candidates) {
+      try {
+        const candidate = get();
+        candidate?.("child_process");
+        if (candidate) {
+          cachedRequire = candidate;
+          break;
+        }
+      } catch {
+      }
+    }
+  }
+  if (!cachedRequire) {
+    throw new Error(
+      "n\xE3o achei um require do Node capaz de carregar m\xF3dulos al\xE9m da lista do BetterDiscord"
+    );
+  }
+  return cachedRequire(name);
+}
 var HELPER_NAME = "p2pshare-audio.exe";
 var SAMPLE_RATE = 48e3;
 var CHANNELS = 2;
@@ -382,10 +412,10 @@ async function downloadBuffer(url) {
   const net = BdApi.Net?.fetch;
   const res = net ? await net(url, { redirect: "follow" }) : await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`o servidor respondeu ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+  return new Uint8Array(await res.arrayBuffer());
 }
-function sha256(buffer) {
-  return require("crypto").createHash("sha256").update(buffer).digest("hex");
+function sha256(data) {
+  return require("crypto").createHash("sha256").update(data).digest("hex");
 }
 function localHelperIsValid() {
   try {
@@ -439,6 +469,7 @@ function recordDiagnostics() {
       path.join(BdApi.Plugins.folder, "p2pshare-audio-debug.json"),
       JSON.stringify({
         quando: (/* @__PURE__ */ new Date()).toISOString(),
+        requireDoNode: cachedRequire ? "encontrado" : "indispon\xEDvel",
         url: HELPER_URL,
         hashEsperado: HELPER_SHA256,
         pastaDePlugins: BdApi.Plugins.folder,
@@ -471,10 +502,10 @@ async function listAudioApps() {
   if (!exe) return [];
   return new Promise((resolve) => {
     try {
-      const child = require("child_process").spawn(exe, ["--list"], { windowsHide: true });
+      const child = nodeRequire("child_process").spawn(exe, ["--list"], { windowsHide: true });
       let out = "";
       child.stdout.on("data", (d) => {
-        out += d.toString();
+        out += new TextDecoder().decode(d);
       });
       child.on("close", () => {
         try {
@@ -516,26 +547,32 @@ async function captureIsolatedAudio(request = { mode: "discord" }) {
   const args = await helperArgs(request);
   if (!args) return null;
   try {
-    const child = require("child_process").spawn(exe, args, { windowsHide: true });
+    const child = nodeRequire("child_process").spawn(exe, args, { windowsHide: true });
     const context = new AudioContext({ sampleRate: SAMPLE_RATE });
     const destination = context.createMediaStreamDestination();
     const ring = new Float32Array(RING_FRAMES * CHANNELS);
     let writeAt = 0;
     let readAt = 0;
     let available = 0;
-    let leftover = Buffer.alloc(0);
+    let leftover = new Uint8Array(0);
     child.stdout.on("data", (chunk) => {
-      const buf = leftover.length ? Buffer.concat([leftover, chunk]) : chunk;
+      let buf = chunk;
+      if (leftover.length) {
+        buf = new Uint8Array(leftover.length + chunk.length);
+        buf.set(leftover);
+        buf.set(chunk, leftover.length);
+      }
       const usable = buf.length - buf.length % 4;
-      leftover = buf.subarray(usable);
+      leftover = buf.slice(usable);
+      const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
       for (let i = 0; i < usable; i += 4) {
-        ring[writeAt] = buf.readFloatLE(i);
+        ring[writeAt] = view.getFloat32(i, true);
         writeAt = (writeAt + 1) % ring.length;
         if (available < ring.length) available++;
         else readAt = (readAt + 1) % ring.length;
       }
     });
-    child.stderr.on("data", (d) => console.debug("[P2PShare] helper:", d.toString().trim()));
+    child.stderr.on("data", (d) => console.debug("[P2PShare] helper:", new TextDecoder().decode(d).trim()));
     child.on("error", (err) => console.error("[P2PShare] helper falhou ao iniciar", err));
     const node = context.createScriptProcessor(1024, 0, CHANNELS);
     node.onaudioprocess = (event) => {
@@ -569,6 +606,8 @@ async function captureIsolatedAudio(request = { mode: "discord" }) {
     });
     return { track, stop };
   } catch (err) {
+    lastError = err.message;
+    recordDiagnostics();
     console.error("[P2PShare] n\xE3o deu para capturar \xE1udio isolado", err);
     BdApi.UI.showToast(
       `\xC1udio isolado indispon\xEDvel: ${err.message}`,

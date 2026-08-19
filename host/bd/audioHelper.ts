@@ -25,6 +25,54 @@ declare const BdApi: any;
  * gravar. Baixar e executar código nativo sem isso seria uma porta dos fundos.
  */
 
+/**
+ * `require` do Node de verdade.
+ *
+ * O do BetterDiscord atende uma lista fixa de módulos — fs, path, electron,
+ * process, vm — e o que estiver fora dela ele tenta resolver como caminho de
+ * arquivo, falhando com ENOENT. `child_process` está fora dessa lista.
+ *
+ * O `process` do renderer é o do Node, e o módulo principal dele carrega o
+ * require original, sem filtro. As alternativas ficam como reserva porque a
+ * forma de alcançá-lo já mudou entre versões do Electron.
+ */
+let cachedRequire: ((name: string) => any) | null | undefined;
+
+function nodeRequire(name: string): any {
+    if (cachedRequire === undefined) {
+        const candidates: (() => ((n: string) => any) | undefined)[] = [
+            () => (window as any).process?.mainModule?.require?.bind(
+                (window as any).process.mainModule),
+            () => (globalThis as any).require,
+            () => (window as any).require
+        ];
+
+        cachedRequire = null;
+        for (const get of candidates) {
+            try {
+                const candidate = get();
+                // Só serve se der conta do módulo que o do BD não dá.
+                candidate?.("child_process");
+                if (candidate) {
+                    cachedRequire = candidate;
+                    break;
+                }
+            } catch {
+                // tenta o próximo
+            }
+        }
+    }
+
+    if (!cachedRequire) {
+        throw new Error(
+            "não achei um require do Node capaz de carregar módulos além da " +
+            "lista do BetterDiscord"
+        );
+    }
+
+    return cachedRequire(name);
+}
+
 const HELPER_NAME = "p2pshare-audio.exe";
 const SAMPLE_RATE = 48_000;
 const CHANNELS = 2;
@@ -47,7 +95,7 @@ function helperPath(): string {
  * O módulo `https` do Node não serve aqui: o BetterDiscord o substitui por um
  * shim que não tem a interface de stream do Node.
  */
-async function downloadBuffer(url: string): Promise<Buffer> {
+async function downloadBuffer(url: string): Promise<Uint8Array> {
     const net = BdApi.Net?.fetch;
 
     // BetterDiscord antigo, sem BdApi.Net: tenta o fetch comum, que funciona
@@ -58,11 +106,11 @@ async function downloadBuffer(url: string): Promise<Buffer> {
 
     if (!res.ok) throw new Error(`o servidor respondeu ${res.status}`);
 
-    return Buffer.from(await res.arrayBuffer());
+    return new Uint8Array(await res.arrayBuffer());
 }
 
-function sha256(buffer: Buffer): string {
-    return require("crypto").createHash("sha256").update(buffer).digest("hex");
+function sha256(data: Uint8Array): string {
+    return require("crypto").createHash("sha256").update(data).digest("hex");
 }
 
 /** O arquivo em disco é mesmo o binário que publicamos? */
@@ -152,6 +200,7 @@ function recordDiagnostics(): void {
             path.join(BdApi.Plugins.folder, "p2pshare-audio-debug.json"),
             JSON.stringify({
                 quando: new Date().toISOString(),
+                requireDoNode: cachedRequire ? "encontrado" : "indisponível",
                 url: HELPER_URL,
                 hashEsperado: HELPER_SHA256,
                 pastaDePlugins: BdApi.Plugins.folder,
@@ -210,10 +259,12 @@ export async function listAudioApps(): Promise<AudioApp[]> {
 
     return new Promise(resolve => {
         try {
-            const child = require("child_process").spawn(exe, ["--list"], { windowsHide: true });
+            const child = nodeRequire("child_process").spawn(exe, ["--list"], { windowsHide: true });
 
             let out = "";
-            child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+            child.stdout.on("data", (d: Uint8Array) => {
+                out += new TextDecoder().decode(d);
+            });
 
             child.on("close", () => {
                 try {
@@ -300,7 +351,7 @@ export async function captureIsolatedAudio(
     if (!args) return null;
 
     try {
-        const child = require("child_process").spawn(exe, args, { windowsHide: true });
+        const child = nodeRequire("child_process").spawn(exe, args, { windowsHide: true });
 
         const context = new AudioContext({ sampleRate: SAMPLE_RATE });
         const destination = context.createMediaStreamDestination();
@@ -314,17 +365,24 @@ export async function captureIsolatedAudio(
 
         // Um chunk do pipe pode terminar no meio de um float; o resto espera
         // o próximo pedaço. Sem isso o áudio vira ruído.
-        // Anotado: alloc devolve Buffer<ArrayBuffer> e subarray devolve
-        // Buffer<ArrayBufferLike>, e os dois se alternam nesta variável.
-        let leftover: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+        let leftover = new Uint8Array(0);
 
-        child.stdout.on("data", (chunk: Buffer) => {
-            const buf = leftover.length ? Buffer.concat([leftover, chunk]) : chunk;
+        child.stdout.on("data", (chunk: Uint8Array) => {
+            let buf = chunk;
+            if (leftover.length) {
+                buf = new Uint8Array(leftover.length + chunk.length);
+                buf.set(leftover);
+                buf.set(chunk, leftover.length);
+            }
+
             const usable = buf.length - (buf.length % 4);
-            leftover = buf.subarray(usable);
+            leftover = buf.slice(usable);
+
+            const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
 
             for (let i = 0; i < usable; i += 4) {
-                ring[writeAt] = buf.readFloatLE(i);
+                // true = little-endian, que é como o auxiliar escreve.
+                ring[writeAt] = view.getFloat32(i, true);
                 writeAt = (writeAt + 1) % ring.length;
 
                 if (available < ring.length) available++;
@@ -332,8 +390,8 @@ export async function captureIsolatedAudio(
             }
         });
 
-        child.stderr.on("data", (d: Buffer) =>
-            console.debug("[P2PShare] helper:", d.toString().trim()));
+        child.stderr.on("data", (d: Uint8Array) =>
+            console.debug("[P2PShare] helper:", new TextDecoder().decode(d).trim()));
 
         child.on("error", (err: Error) =>
             console.error("[P2PShare] helper falhou ao iniciar", err));
@@ -380,6 +438,8 @@ export async function captureIsolatedAudio(
 
         return { track, stop };
     } catch (err) {
+        lastError = (err as Error).message;
+        recordDiagnostics();
         console.error("[P2PShare] não deu para capturar áudio isolado", err);
         BdApi.UI.showToast(
             `Áudio isolado indisponível: ${(err as Error).message}`,
