@@ -24,12 +24,24 @@ export const DOWNLOAD_URL =
 /**
  * Executável auxiliar que captura o áudio do sistema sem o Discord.
  *
- * Preso à versão deste plugin, e não a `latest`: o binário é conferido contra
- * o hash abaixo, e apontar para a release mais recente faria um plugin antigo
- * baixar um arquivo que ele mesmo recusaria.
+ * Publicado numa tag própria, que não acompanha a versão do plugin.
+ *
+ * Acompanhar acabava em 404 garantido: o plugin chega na máquina de quem usa
+ * assim que é gerado, e a release correspondente só existe minutos depois —
+ * nesse intervalo a URL aponta para uma tag inexistente e o componente não
+ * instala. E não havia o que ganhar com isso: o binário saiu byte a byte
+ * idêntico em todas as releases até aqui, porque o código Rust não mudou.
+ *
+ * Também não serve `latest`, que muda a cada release do plugin: um plugin
+ * antigo baixaria um binário novo e o recusaria no confronto de hash.
+ *
+ * Ao mudar o binário, publique uma tag nova aqui junto com o HELPER_SHA256
+ * novo. O confronto de hash abaixo é o que garante que os dois combinam.
  */
+export const HELPER_TAG = "audio-v1";
+
 export const HELPER_URL =
-    `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
+    `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
 
 /**
  * SHA-256 do auxiliar publicado.

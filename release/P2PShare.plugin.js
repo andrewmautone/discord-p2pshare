@@ -131,7 +131,8 @@ async function captureScreen(deps = {}, opts = {}) {
 var PROTOCOL_VERSION = 1;
 var PLUGIN_VERSION = "1.15.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
-var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
+var HELPER_TAG = "audio-v1";
+var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "3b71f2742c6e92b0dd9621a332a55ce0dc51b19ded802c9bfa548de9e476b3cf";
 var UPDATE_URL = "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
 var ICE_SERVERS = [
