@@ -1137,6 +1137,9 @@ function onBroadcastStateChange(listener) {
   listener(currentState());
   return () => listeners.delete(listener);
 }
+function isBroadcasting() {
+  return session !== null;
+}
 function getBroadcastState() {
   return currentState();
 }
@@ -1250,67 +1253,6 @@ function looksLikePlugin(source, expectedName) {
   return parseMetaVersion(source) !== null;
 }
 
-// host/bd/updater.ts
-var PLUGIN_NAME = "P2PShare";
-var FILE_NAME = "P2PShare.plugin.js";
-async function fetchLatest() {
-  try {
-    const res = await fetch(UPDATE_URL, { cache: "no-store" });
-    if (!res.ok) {
-      console.warn(`[P2PShare] updater: host respondeu ${res.status}`);
-      return null;
-    }
-    return await res.text();
-  } catch (err) {
-    console.warn("[P2PShare] updater: n\xE3o deu para checar atualiza\xE7\xE3o", err);
-    return null;
-  }
-}
-function install(source, version) {
-  try {
-    const fs = require("fs");
-    const path = require("path");
-    const target = path.join(BdApi.Plugins.folder, FILE_NAME);
-    fs.writeFileSync(target, source, "utf8");
-    BdApi.UI.showToast(
-      `P2PShare atualizado para ${version}. Recarregando\u2026`,
-      { type: "success" }
-    );
-  } catch (err) {
-    BdApi.UI.showToast(
-      `N\xE3o deu para gravar a atualiza\xE7\xE3o: ${err.message}`,
-      { type: "error" }
-    );
-  }
-}
-async function checkForUpdate() {
-  if (!UPDATE_URL) return;
-  const source = await fetchLatest();
-  if (!source) return;
-  if (!looksLikePlugin(source, PLUGIN_NAME)) {
-    console.warn("[P2PShare] updater: resposta n\xE3o parece o plugin, ignorando");
-    return;
-  }
-  const remote = parseMetaVersion(source);
-  if (!remote || !isNewer(remote, PLUGIN_VERSION)) return;
-  const close = BdApi.UI.showNotice(
-    `P2PShare ${remote} dispon\xEDvel (voc\xEA tem ${PLUGIN_VERSION}).`,
-    {
-      type: "info",
-      buttons: [{
-        label: "Atualizar",
-        onClick: () => {
-          install(source, remote);
-          try {
-            close();
-          } catch {
-          }
-        }
-      }]
-    }
-  );
-}
-
 // watch.ts
 var beacons = /* @__PURE__ */ new Map();
 var watching = /* @__PURE__ */ new Map();
@@ -1318,6 +1260,9 @@ var beaconListeners = /* @__PURE__ */ new Set();
 function notifyBeacons() {
   const list = [...beacons.values()];
   for (const listener of beaconListeners) listener(list);
+}
+function watchingCount() {
+  return watching.size;
 }
 async function startWatching(beacon) {
   if (watching.has(beacon.sessionId)) return;
@@ -1397,6 +1342,84 @@ function initWatcher() {
     host.unmountAllOverlays();
     notifyBeacons();
   };
+}
+
+// host/bd/updater.ts
+var PLUGIN_NAME = "P2PShare";
+var FILE_NAME = "P2PShare.plugin.js";
+var RETRY_WHEN_BUSY_MS = 5 * 60 * 1e3;
+function isBusy() {
+  return isBroadcasting() || watchingCount() > 0;
+}
+async function fetchLatest() {
+  try {
+    const res = await fetch(UPDATE_URL, { cache: "no-store" });
+    if (!res.ok) {
+      console.warn(`[P2PShare] updater: host respondeu ${res.status}`);
+      return null;
+    }
+    return await res.text();
+  } catch (err) {
+    console.warn("[P2PShare] updater: n\xE3o deu para checar atualiza\xE7\xE3o", err);
+    return null;
+  }
+}
+function install(source, version) {
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    const target = path.join(BdApi.Plugins.folder, FILE_NAME);
+    fs.writeFileSync(target, source, "utf8");
+    BdApi.UI.showToast(
+      `P2PShare atualizado para ${version}. Recarregando\u2026`,
+      { type: "success" }
+    );
+  } catch (err) {
+    BdApi.UI.showToast(
+      `N\xE3o deu para gravar a atualiza\xE7\xE3o: ${err.message}`,
+      { type: "error" }
+    );
+  }
+}
+async function checkForUpdate() {
+  if (!UPDATE_URL) return;
+  if (isBusy()) {
+    setTimeout(() => {
+      void checkForUpdate();
+    }, RETRY_WHEN_BUSY_MS);
+    return;
+  }
+  const source = await fetchLatest();
+  if (!source) return;
+  if (!looksLikePlugin(source, PLUGIN_NAME)) {
+    console.warn("[P2PShare] updater: resposta n\xE3o parece o plugin, ignorando");
+    return;
+  }
+  const remote = parseMetaVersion(source);
+  if (!remote || !isNewer(remote, PLUGIN_VERSION)) return;
+  const close = BdApi.UI.showNotice(
+    `P2PShare ${remote} dispon\xEDvel (voc\xEA tem ${PLUGIN_VERSION}).`,
+    {
+      type: "info",
+      buttons: [{
+        label: "Atualizar",
+        onClick: () => {
+          if (isBusy()) {
+            BdApi.UI.showToast(
+              "Termine a transmiss\xE3o antes de atualizar \u2014 o plugin recarrega e a sess\xE3o cairia.",
+              { type: "warning" }
+            );
+            return;
+          }
+          install(source, remote);
+          try {
+            close();
+          } catch {
+          }
+        }
+      }]
+    }
+  );
 }
 
 // bd-entry.ts

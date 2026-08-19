@@ -33,6 +33,11 @@ export function isWatching(sessionId: string): boolean {
     return watching.has(sessionId);
 }
 
+/** Quantas transmissões estou assistindo agora. */
+export function watchingCount(): number {
+    return watching.size;
+}
+
 export async function startWatching(beacon: Beacon): Promise<void> {
     if (watching.has(beacon.sessionId)) return;
 

@@ -4,13 +4,29 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { isBroadcasting } from "../../broadcast";
 import { PLUGIN_VERSION, UPDATE_URL } from "../../constants";
 import { isNewer, looksLikePlugin, parseMetaVersion } from "../../updater";
+import { watchingCount } from "../../watch";
 
 declare const BdApi: any;
 
 const PLUGIN_NAME = "P2PShare";
 const FILE_NAME = "P2PShare.plugin.js";
+
+/** Quando ocupado, tenta de novo daqui a pouco em vez de desistir de vez. */
+const RETRY_WHEN_BUSY_MS = 5 * 60 * 1000;
+
+/**
+ * Gravar o arquivo faz o BetterDiscord recarregar o plugin na hora
+ * (`watchAddons` → `reloadAddon`), o que executa nosso `stop()` — e isso
+ * encerra a transmissão e fecha as janelas de quem está assistindo.
+ *
+ * Atualizar no meio de uma sessão derrubaria todo mundo sem aviso.
+ */
+function isBusy(): boolean {
+    return isBroadcasting() || watchingCount() > 0;
+}
 
 /**
  * Atualização automática sem servidor próprio.
@@ -68,6 +84,13 @@ function install(source: string, version: string): void {
 export async function checkForUpdate(): Promise<void> {
     if (!UPDATE_URL) return;
 
+    if (isBusy()) {
+        // Nem checa: o aviso apareceria no meio da transmissão e o clique
+        // derrubaria a sessão.
+        setTimeout(() => { void checkForUpdate(); }, RETRY_WHEN_BUSY_MS);
+        return;
+    }
+
     const source = await fetchLatest();
     if (!source) return;
 
@@ -86,6 +109,16 @@ export async function checkForUpdate(): Promise<void> {
             buttons: [{
                 label: "Atualizar",
                 onClick: () => {
+                    // Pode ter começado a transmitir depois que o aviso subiu.
+                    if (isBusy()) {
+                        BdApi.UI.showToast(
+                            "Termine a transmissão antes de atualizar — o plugin " +
+                            "recarrega e a sessão cairia.",
+                            { type: "warning" }
+                        );
+                        return;
+                    }
+
                     install(source, remote);
                     try {
                         close();
