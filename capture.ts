@@ -47,6 +47,17 @@ const defaultDeps: Required<CaptureDeps> = {
     pickSource: async sources => sources[0]?.id ?? null
 };
 
+export interface CaptureOptions {
+    /**
+     * Capturar o áudio do sistema junto.
+     *
+     * O loopback do Windows pega TODO o áudio da máquina, incluindo o próprio
+     * Discord — quem assiste ouve a chamada de volta. Não existe exclusão por
+     * aplicativo exposta ao Electron, então a saída é poder desligar.
+     */
+    audio?: boolean;
+}
+
 /**
  * Obtém o stream da tela.
  *
@@ -55,8 +66,12 @@ const defaultDeps: Required<CaptureDeps> = {
  * Só quando ele não existe é que caímos no getDisplayMedia, que abre o
  * seletor nativo do Chromium e não nos dá escolha sobre a UI.
  */
-export async function captureScreen(deps: CaptureDeps = {}): Promise<MediaStream> {
+export async function captureScreen(
+    deps: CaptureDeps = {},
+    opts: CaptureOptions = {}
+): Promise<MediaStream> {
     const d = { ...defaultDeps, ...deps };
+    const wantAudio = opts.audio !== false;
 
     let sources: CaptureSource[] = [];
     try {
@@ -80,13 +95,15 @@ export async function captureScreen(deps: CaptureDeps = {}): Promise<MediaStream
 
         // Áudio do sistema (loopback). No Electron isto exige chromeMediaSource
         // "desktop" também no áudio — sem esse bloco a transmissão vai muda.
-        try {
-            return await d.getUserMedia({
-                audio: { mandatory: { chromeMediaSource: "desktop" } },
-                video
-            });
-        } catch (err) {
-            console.warn("[P2PShare] sem áudio do sistema, transmitindo só vídeo", err);
+        if (wantAudio) {
+            try {
+                return await d.getUserMedia({
+                    audio: { mandatory: { chromeMediaSource: "desktop" } },
+                    video
+                });
+            } catch (err) {
+                console.warn("[P2PShare] sem áudio do sistema, transmitindo só vídeo", err);
+            }
         }
 
         // Nem toda máquina tem loopback: melhor transmitir mudo que não transmitir.
@@ -100,7 +117,7 @@ export async function captureScreen(deps: CaptureDeps = {}): Promise<MediaStream
     try {
         return await d.getDisplayMedia({
             video: { frameRate: { ideal: 60 } },
-            audio: true
+            audio: wantAudio
         });
     } catch (err) {
         throw new CaptureError(

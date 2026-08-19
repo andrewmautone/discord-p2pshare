@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.2.0
+ * @version 1.2.1
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -54,8 +54,9 @@ var defaultDeps = {
   // Sem seletor injetado, transmite a primeira fonte (a tela principal).
   pickSource: async (sources) => sources[0]?.id ?? null
 };
-async function captureScreen(deps = {}) {
+async function captureScreen(deps = {}, opts = {}) {
   const d = { ...defaultDeps, ...deps };
+  const wantAudio = opts.audio !== false;
   let sources = [];
   try {
     sources = await d.getSources();
@@ -72,13 +73,15 @@ async function captureScreen(deps = {}) {
         maxFrameRate: 60
       }
     };
-    try {
-      return await d.getUserMedia({
-        audio: { mandatory: { chromeMediaSource: "desktop" } },
-        video
-      });
-    } catch (err) {
-      console.warn("[P2PShare] sem \xE1udio do sistema, transmitindo s\xF3 v\xEDdeo", err);
+    if (wantAudio) {
+      try {
+        return await d.getUserMedia({
+          audio: { mandatory: { chromeMediaSource: "desktop" } },
+          video
+        });
+      } catch (err) {
+        console.warn("[P2PShare] sem \xE1udio do sistema, transmitindo s\xF3 v\xEDdeo", err);
+      }
     }
     try {
       return await d.getUserMedia({ audio: false, video });
@@ -89,7 +92,7 @@ async function captureScreen(deps = {}) {
   try {
     return await d.getDisplayMedia({
       video: { frameRate: { ideal: 60 } },
-      audio: true
+      audio: wantAudio
     });
   } catch (err) {
     throw new CaptureError(
@@ -101,7 +104,7 @@ async function captureScreen(deps = {}) {
 // constants.ts
 var PROTOCOL_VERSION = 1;
 var PLUGIN_URL = "https://github.com/andrewmautone/discord-p2pshare";
-var PLUGIN_VERSION = "1.2.0";
+var PLUGIN_VERSION = "1.2.1";
 var UPDATE_URL = "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
 var ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -605,6 +608,7 @@ function removeStyles() {
 function makeDraggable(el, handle, onDrop) {
   let offset = null;
   handle.addEventListener("mousedown", (e) => {
+    if (e.target?.closest("button, input, select, a")) return;
     const rect = el.getBoundingClientRect();
     offset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     e.preventDefault();
@@ -1096,6 +1100,7 @@ var host = {
   onMessageDelete,
   toast: (message, kind) => BdApi.UI.showToast(message, { type: TOAST_TYPE[kind] }),
   getBudgetMbps: () => loadSetting("uploadBudgetMbps", DEFAULT_BUDGET_MBPS),
+  shouldCaptureAudio: () => loadSetting("captureAudio", true),
   pickSource: openSourcePicker,
   mountOverlay,
   unmountOverlay,
@@ -1425,7 +1430,10 @@ async function startBroadcast() {
   }
   let stream;
   try {
-    stream = await captureScreen({ pickSource: host.pickSource });
+    stream = await captureScreen(
+      { pickSource: host.pickSource },
+      { audio: host.shouldCaptureAudio() }
+    );
   } catch (err) {
     host.toast(
       err instanceof CaptureError ? err.message : `falha inesperada na captura: ${err.message}`,
@@ -1821,7 +1829,19 @@ var P2PShare = class {
     const autoHint = document.createElement("div");
     autoHint.textContent = "Desligado, o plugin apenas avisa e espera voc\xEA clicar. Nunca atualiza durante uma transmiss\xE3o.";
     autoHint.style.cssText = "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
-    wrap.append(label, hint, slider, auto, autoHint);
+    const audio = document.createElement("label");
+    audio.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:20px;cursor:pointer";
+    const audioCheck = document.createElement("input");
+    audioCheck.type = "checkbox";
+    audioCheck.checked = loadSetting("captureAudio", true);
+    audioCheck.addEventListener("change", () => saveSetting("captureAudio", audioCheck.checked));
+    const audioText = document.createElement("span");
+    audioText.textContent = "Transmitir o \xE1udio do sistema";
+    audio.append(audioCheck, audioText);
+    const audioHint = document.createElement("div");
+    audioHint.textContent = "O Windows s\xF3 permite capturar o \xE1udio inteiro da m\xE1quina, e isso inclui o pr\xF3prio Discord \u2014 quem assiste ouve a chamada de volta. Desligue se isso incomodar.";
+    audioHint.style.cssText = "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
+    wrap.append(label, hint, slider, auto, autoHint, audio, audioHint);
     return wrap;
   }
 };

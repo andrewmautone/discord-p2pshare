@@ -271,6 +271,10 @@ function makeDraggable(el: HTMLElement, handle: HTMLElement, onDrop?: () => void
     let offset: { x: number; y: number; } | null = null;
 
     handle.addEventListener("mousedown", e => {
+        // A alca cobre a barra inteira, controles inclusive. Sem esta saida o
+        // preventDefault abaixo engole o clique no botao e o arraste do slider.
+        if ((e.target as HTMLElement)?.closest("button, input, select, a")) return;
+
         const rect = el.getBoundingClientRect();
         offset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
         e.preventDefault();

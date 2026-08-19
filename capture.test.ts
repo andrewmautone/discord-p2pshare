@@ -49,6 +49,19 @@ describe("captureScreen", () => {
         );
     });
 
+    it("nao pede audio quando o usuario desligou", async () => {
+        const attempts: any[] = [];
+
+        await captureScreen({
+            getSources: async () => twoSources,
+            pickSource: async () => "screen:0",
+            getUserMedia: async c => { attempts.push(c); return fakeStream; }
+        }, { audio: false });
+
+        assert.equal(attempts.length, 1, "nao tenta com audio antes");
+        assert.equal(attempts[0].audio, false);
+    });
+
     it("cai para video sem audio quando o loopback nao existe", async () => {
         const attempts: any[] = [];
 

@@ -46,6 +46,7 @@ export const host: Host = {
 
     toast: (message, kind) => showToast(message, TOAST_TYPE[kind]),
     getBudgetMbps: () => settings.store.uploadBudgetMbps,
+    shouldCaptureAudio: () => settings.store.captureAudio,
     pickSource: openSourcePicker,
 
     mountOverlay,

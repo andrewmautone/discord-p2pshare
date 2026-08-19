@@ -69,6 +69,13 @@ export interface Host {
     toast(message: string, kind: ToastKind): void;
     /** Orçamento de upload configurado pelo usuário, em Mbps. */
     getBudgetMbps(): number;
+    /**
+     * Transmitir o áudio do sistema junto do vídeo.
+     *
+     * Desligado quando quem transmite não quer devolver o áudio do próprio
+     * Discord para a chamada.
+     */
+    shouldCaptureAudio(): boolean;
     /** Abre o seletor de tela/janela. Resolve com null se o usuário cancelar. */
     pickSource(sources: CaptureSource[]): Promise<string | null>;
 

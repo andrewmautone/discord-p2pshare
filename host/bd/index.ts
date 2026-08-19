@@ -36,6 +36,7 @@ export const host: Host = {
 
     toast: (message, kind) => BdApi.UI.showToast(message, { type: TOAST_TYPE[kind] }),
     getBudgetMbps: () => loadSetting("uploadBudgetMbps", DEFAULT_BUDGET_MBPS),
+    shouldCaptureAudio: () => loadSetting("captureAudio", true),
     pickSource: ui.openSourcePicker,
 
     mountOverlay: ui.mountOverlay,

@@ -162,7 +162,28 @@ export default class P2PShare {
         autoHint.style.cssText =
             "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
 
-        wrap.append(label, hint, slider, auto, autoHint);
+        const audio = document.createElement("label");
+        audio.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:20px;cursor:pointer";
+
+        const audioCheck = document.createElement("input");
+        audioCheck.type = "checkbox";
+        audioCheck.checked = loadSetting("captureAudio", true);
+        audioCheck.addEventListener("change", () => saveSetting("captureAudio", audioCheck.checked));
+
+        const audioText = document.createElement("span");
+        audioText.textContent = "Transmitir o áudio do sistema";
+
+        audio.append(audioCheck, audioText);
+
+        const audioHint = document.createElement("div");
+        audioHint.textContent =
+            "O Windows só permite capturar o áudio inteiro da máquina, e isso " +
+            "inclui o próprio Discord — quem assiste ouve a chamada de volta. " +
+            "Desligue se isso incomodar.";
+        audioHint.style.cssText =
+            "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
+
+        wrap.append(label, hint, slider, auto, autoHint, audio, audioHint);
         return wrap;
     }
 }

@@ -69,7 +69,10 @@ export async function startBroadcast(): Promise<void> {
 
     let stream: MediaStream;
     try {
-        stream = await captureScreen({ pickSource: host.pickSource });
+        stream = await captureScreen(
+            { pickSource: host.pickSource },
+            { audio: host.shouldCaptureAudio() }
+        );
     } catch (err) {
         host.toast(
             err instanceof CaptureError
