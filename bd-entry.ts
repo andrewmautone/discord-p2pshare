@@ -15,7 +15,7 @@ import {
 import { DEFAULT_BUDGET_MBPS } from "./constants";
 import { loadSetting, saveSetting, ui } from "./host/bd";
 import { getCurrentUserId, getCurrentUsername, getUsername } from "./host/bd/api";
-import { ensureHelper, helperReady, listAudioApps, syncHelper } from "./host/bd/audioHelper";
+import { ensureHelper, helperError, helperReady, listAudioApps, syncHelper } from "./host/bd/audioHelper";
 import { startUpdateChecks } from "./host/bd/updater";
 import { getActiveBeacons, initWatcher, isWatching, onBeaconsChange, startWatching } from "./watch";
 
@@ -261,10 +261,14 @@ export default class P2PShare {
 
         const paintHelper = () => {
             const ready = helperReady();
+            const err = helperError();
             helperStatus.textContent = ready
                 ? "Componente de áudio instalado."
-                : "Componente de áudio indisponível — baixando em segundo plano. " +
-                  "Enquanto isso, os modos acima usam o áudio do sistema.";
+                : err
+                    ? `Não deu para instalar o componente: ${err}. ` +
+                      "Enquanto isso, os modos acima usam o áudio do sistema."
+                    : "Componente de áudio indisponível — baixando em segundo plano. " +
+                      "Enquanto isso, os modos acima usam o áudio do sistema.";
             helperStatus.style.color = ready
                 ? "var(--text-positive, #23a55a)"
                 : "var(--text-muted, #72767d)";

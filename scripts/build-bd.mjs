@@ -59,7 +59,7 @@ await build({
     plugins: [swapHost],
     // O plugin roda no renderer do Electron, onde os módulos do Node existem
     // em tempo de execução. Empacotá-los é impossível e desnecessário.
-    external: ["fs", "path", "crypto", "child_process", "os", "electron"],
+    external: ["fs", "path", "crypto", "child_process", "os", "https", "electron"],
     // esbuild exporta { default: P2PShare }; o BetterDiscord espera a classe
     // direto em module.exports.
     footer: { js: "module.exports = module.exports.default;" }

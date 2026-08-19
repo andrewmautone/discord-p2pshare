@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.9.1
+ * @version 1.9.2
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -125,7 +125,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.9.1";
+var PLUGIN_VERSION = "1.9.2";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "e48cc114f63f556d1fa4945b24430040cb07a786dc03ef2e9052ed37b6796c72";
@@ -378,6 +378,32 @@ function helperPath() {
   const path = require("path");
   return path.join(BdApi.Plugins.folder, HELPER_NAME);
 }
+function downloadBuffer(url, hops = 0) {
+  return new Promise((resolve, reject) => {
+    if (hops > 5) {
+      reject(new Error("redirecionamentos demais"));
+      return;
+    }
+    require("https").get(url, { headers: { "User-Agent": "P2PShare" } }, (res) => {
+      const status = res.statusCode ?? 0;
+      const location = res.headers?.location;
+      if (status >= 300 && status < 400 && location) {
+        res.resume();
+        resolve(downloadBuffer(new URL(location, url).href, hops + 1));
+        return;
+      }
+      if (status !== 200) {
+        res.resume();
+        reject(new Error(`o servidor respondeu ${status}`));
+        return;
+      }
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
+      res.on("error", reject);
+    }).on("error", reject);
+  });
+}
 function sha256(buffer) {
   return require("crypto").createHash("sha256").update(buffer).digest("hex");
 }
@@ -404,9 +430,7 @@ function ensureHelper() {
 }
 async function download() {
   try {
-    const res = await fetch(HELPER_URL, { cache: "no-store" });
-    if (!res.ok) throw new Error(`o servidor respondeu ${res.status}`);
-    const buffer = Buffer.from(await res.arrayBuffer());
+    const buffer = await downloadBuffer(HELPER_URL);
     const digest = sha256(buffer);
     if (digest !== HELPER_SHA256) {
       throw new Error(
@@ -414,10 +438,37 @@ async function download() {
       );
     }
     require("fs").writeFileSync(helperPath(), buffer);
+    lastError = null;
     return helperPath();
   } catch (err) {
+    lastError = err.message;
     console.warn("[P2PShare] n\xE3o deu para baixar o componente de \xE1udio", err);
+    recordDiagnostics();
     return null;
+  }
+}
+var lastError = null;
+function helperError() {
+  return lastError;
+}
+function recordDiagnostics() {
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    fs.writeFileSync(
+      path.join(BdApi.Plugins.folder, "p2pshare-audio-debug.json"),
+      JSON.stringify({
+        quando: (/* @__PURE__ */ new Date()).toISOString(),
+        url: HELPER_URL,
+        hashEsperado: HELPER_SHA256,
+        pastaDePlugins: BdApi.Plugins.folder,
+        arquivoExiste: helperFileExists(),
+        erro: lastError
+      }, null, 2),
+      "utf8"
+    );
+  } catch (err) {
+    console.warn("[P2PShare] n\xE3o deu para gravar o diagn\xF3stico de \xE1udio", err);
   }
 }
 async function syncHelper() {
@@ -2666,7 +2717,8 @@ var P2PShare = class {
     helperBtn.style.cssText = "padding:5px 10px;border:none;border-radius:3px;cursor:pointer;background:var(--brand-experiment,#5865f2);color:#fff;font-size:12px";
     const paintHelper = () => {
       const ready = helperReady();
-      helperStatus.textContent = ready ? "Componente de \xE1udio instalado." : "Componente de \xE1udio indispon\xEDvel \u2014 baixando em segundo plano. Enquanto isso, os modos acima usam o \xE1udio do sistema.";
+      const err = helperError();
+      helperStatus.textContent = ready ? "Componente de \xE1udio instalado." : err ? `N\xE3o deu para instalar o componente: ${err}. Enquanto isso, os modos acima usam o \xE1udio do sistema.` : "Componente de \xE1udio indispon\xEDvel \u2014 baixando em segundo plano. Enquanto isso, os modos acima usam o \xE1udio do sistema.";
       helperStatus.style.color = ready ? "var(--text-positive, #23a55a)" : "var(--text-muted, #72767d)";
       helperBtn.style.display = ready ? "none" : "";
     };

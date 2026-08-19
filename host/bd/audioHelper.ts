@@ -36,6 +36,48 @@ function helperPath(): string {
     return path.join(BdApi.Plugins.folder, HELPER_NAME);
 }
 
+/**
+ * Baixa pelo módulo https do Node, não pelo fetch do navegador.
+ *
+ * O fetch do renderer passa pela política de conteúdo do Discord, e o
+ * download de release do GitHub redireciona para outro host
+ * (release-assets.githubusercontent.com) que ela recusa — o erro que aparece
+ * é um "Failed to fetch" sem explicação. As requisições do Node não passam
+ * por essa política.
+ */
+function downloadBuffer(url: string, hops = 0): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+        if (hops > 5) {
+            reject(new Error("redirecionamentos demais"));
+            return;
+        }
+
+        require("https")
+            .get(url, { headers: { "User-Agent": "P2PShare" } }, (res: any) => {
+                const status = res.statusCode ?? 0;
+                const location = res.headers?.location;
+
+                if (status >= 300 && status < 400 && location) {
+                    res.resume();
+                    resolve(downloadBuffer(new URL(location, url).href, hops + 1));
+                    return;
+                }
+
+                if (status !== 200) {
+                    res.resume();
+                    reject(new Error(`o servidor respondeu ${status}`));
+                    return;
+                }
+
+                const chunks: Buffer[] = [];
+                res.on("data", (c: Buffer) => chunks.push(c));
+                res.on("end", () => resolve(Buffer.concat(chunks)));
+                res.on("error", reject);
+            })
+            .on("error", reject);
+    });
+}
+
 function sha256(buffer: Buffer): string {
     return require("crypto").createHash("sha256").update(buffer).digest("hex");
 }
@@ -79,10 +121,7 @@ export function ensureHelper(): Promise<string | null> {
 
 async function download(): Promise<string | null> {
     try {
-        const res = await fetch(HELPER_URL, { cache: "no-store" });
-        if (!res.ok) throw new Error(`o servidor respondeu ${res.status}`);
-
-        const buffer = Buffer.from(await res.arrayBuffer());
+        const buffer = await downloadBuffer(HELPER_URL);
         const digest = sha256(buffer);
 
         if (digest !== HELPER_SHA256) {
@@ -95,13 +134,51 @@ async function download(): Promise<string | null> {
         }
 
         require("fs").writeFileSync(helperPath(), buffer);
+        lastError = null;
         return helperPath();
     } catch (err) {
         // Sem alarde: o plugin funciona sem o componente, usando o áudio do
         // sistema. Encher a tela de erro por algo que se recupera sozinho na
         // próxima abertura só assusta.
+        lastError = (err as Error).message;
         console.warn("[P2PShare] não deu para baixar o componente de áudio", err);
+        recordDiagnostics();
         return null;
+    }
+}
+
+let lastError: string | null = null;
+
+/** O que impediu a instalação, para a tela de configurações contar. */
+export function helperError(): string | null {
+    return lastError;
+}
+
+/**
+ * Grava o estado da instalação ao lado do plugin.
+ *
+ * O DevTools do Discord vem desligado, então sem isto quem reporta "não
+ * instala" não tem como dizer por quê.
+ */
+function recordDiagnostics(): void {
+    try {
+        const fs = require("fs");
+        const path = require("path");
+
+        fs.writeFileSync(
+            path.join(BdApi.Plugins.folder, "p2pshare-audio-debug.json"),
+            JSON.stringify({
+                quando: new Date().toISOString(),
+                url: HELPER_URL,
+                hashEsperado: HELPER_SHA256,
+                pastaDePlugins: BdApi.Plugins.folder,
+                arquivoExiste: helperFileExists(),
+                erro: lastError
+            }, null, 2),
+            "utf8"
+        );
+    } catch (err) {
+        console.warn("[P2PShare] não deu para gravar o diagnóstico de áudio", err);
     }
 }
 
