@@ -7,8 +7,9 @@
 import { getBroadcastState, onBroadcastStateChange, startBroadcast, stopBroadcast } from "./broadcast";
 import { DEFAULT_BUDGET_MBPS } from "./constants";
 import { loadSetting, saveSetting, ui } from "./host/bd";
+import { getCurrentUserId, getCurrentUsername, getUsername } from "./host/bd/api";
 import { startUpdateChecks } from "./host/bd/updater";
-import { initWatcher } from "./watch";
+import { getActiveBeacons, initWatcher, onBeaconsChange } from "./watch";
 
 declare const BdApi: any;
 
@@ -24,6 +25,7 @@ export default class P2PShare {
     private cleanupState: (() => void) | null = null;
     private cleanupUpdater: (() => void) | null = null;
     private cleanupVoiceBtn: (() => void) | null = null;
+    private cleanupBeacons: (() => void) | null = null;
 
     start(): void {
         ui.injectStyles();
@@ -55,13 +57,39 @@ export default class P2PShare {
             onAnchorChange: found => ui.setLauncherHidden(found)
         });
 
+        // Quem aparece com AO VIVO: eu, se estiver transmitindo, mais todo
+        // beacon ativo no canal.
+        const refreshLive = () => {
+            const users: { id: string; names: string[]; }[] = [];
+
+            if (getBroadcastState().active) {
+                const me = getCurrentUserId();
+                users.push({ id: me, names: [getUsername(me), getCurrentUsername()] });
+            }
+
+            for (const b of getActiveBeacons()) {
+                users.push({
+                    id: b.broadcasterId,
+                    names: [getUsername(b.broadcasterId), b.broadcasterName]
+                });
+            }
+
+            ui.setLiveUsers(users);
+        };
+
+        this.cleanupBeacons = onBeaconsChange(refreshLive);
+
         this.cleanupState = onBroadcastStateChange(state => {
             ui.updateLauncher(state);
             ui.updateVoiceButton(state);
+            refreshLive();
         });
 
         // Não bloqueia o start: se o host estiver fora do ar, o plugin sobe igual.
         this.cleanupUpdater = startUpdateChecks();
+
+        // Dá tempo do painel de voz renderizar antes de fotografar o estado.
+        setTimeout(() => ui.dumpVoiceDiagnostics(), 8000);
     }
 
     stop(): void {
@@ -69,6 +97,9 @@ export default class P2PShare {
 
         this.cleanupState?.();
         this.cleanupState = null;
+
+        this.cleanupBeacons?.();
+        this.cleanupBeacons = null;
 
         this.cleanupVoiceBtn?.();
         this.cleanupVoiceBtn = null;

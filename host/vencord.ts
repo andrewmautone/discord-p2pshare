@@ -53,6 +53,10 @@ export const host: Host = {
     unmountAllOverlays,
     setOverlayViewers,
 
+    // O painel de voz do Vencord ainda não tem selo: o alvo hoje é o
+    // BetterDiscord, e um no-op mantém a interface honesta.
+    setLiveUsers: () => { },
+
     // O botão "Assistir" é renderizado direto na mensagem pelo accessory.
     announceBeacon: () => { },
     revokeBeacon: () => { }

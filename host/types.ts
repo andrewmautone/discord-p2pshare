@@ -98,4 +98,11 @@ export interface Host {
     announceBeacon(notice: BeaconNotice, onWatch: () => void): void;
     /** Retira o aviso quando a transmissão acaba. */
     revokeBeacon(sessionId: string): void;
+
+    /**
+     * Marca quem está transmitindo na lista de participantes do canal de voz.
+     * Cada entrada traz o id e os nomes possíveis, porque o painel mostra ora
+     * o nome de exibição, ora o username.
+     */
+    setLiveUsers(users: { id: string; names: string[]; }[]): void;
 }

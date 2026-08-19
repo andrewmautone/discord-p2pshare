@@ -43,6 +43,8 @@ export const host: Host = {
     unmountAllOverlays: ui.unmountAllOverlays,
     setOverlayViewers: ui.setOverlayViewers,
 
+    setLiveUsers: ui.setLiveUsers,
+
     announceBeacon: ui.announceBeacon,
     revokeBeacon: ui.revokeBeacon
 };

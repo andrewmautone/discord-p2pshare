@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.1.1
+ * @version 1.2.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -101,7 +101,7 @@ async function captureScreen(deps = {}) {
 // constants.ts
 var PROTOCOL_VERSION = 1;
 var PLUGIN_URL = "https://github.com/andrewmautone/discord-p2pshare";
-var PLUGIN_VERSION = "1.1.1";
+var PLUGIN_VERSION = "1.2.0";
 var UPDATE_URL = "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
 var ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -345,6 +345,7 @@ function saveSetting(key, value) {
 var ui_exports = {};
 __export(ui_exports, {
   announceBeacon: () => announceBeacon,
+  dumpVoiceDiagnostics: () => dumpVoiceDiagnostics,
   injectStyles: () => injectStyles,
   mountLauncher: () => mountLauncher,
   mountOverlay: () => mountOverlay,
@@ -353,6 +354,7 @@ __export(ui_exports, {
   removeStyles: () => removeStyles,
   revokeBeacon: () => revokeBeacon,
   setLauncherHidden: () => setLauncherHidden,
+  setLiveUsers: () => setLiveUsers,
   setOverlayViewers: () => setOverlayViewers,
   unmountAllOverlays: () => unmountAllOverlays,
   unmountLauncher: () => unmountLauncher,
@@ -552,6 +554,9 @@ var CSS = `
 }
 .p2ps-overlay-bar button:disabled { opacity: .4; cursor: default; }
 .p2ps-voice-btn { position: relative; }
+/* As classes do Discord nao dimensionam o icone: o SVG deles carrega
+   width/height proprios. Sem isto o botao existe com 0 pixel. */
+.p2ps-voice-btn svg { width: 20px; height: 20px; }
 .p2ps-voice-count {
     position: absolute;
     bottom: 0;
@@ -567,6 +572,20 @@ var CSS = `
     pointer-events: none;
 }
 .p2ps-launcher-hidden { display: none; }
+.p2ps-live-chip {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: 4px;
+    background: var(--status-danger, #ed4245);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    line-height: 14px;
+    white-space: nowrap;
+}
 .p2ps-overlay-bar button {
     background: none;
     border: none;
@@ -655,70 +674,106 @@ function unmountLauncher() {
   launcher.remove();
   launcher = null;
 }
-var voiceBtn = null;
+var voiceBtns = /* @__PURE__ */ new Map();
 var voiceObserver = null;
 var lastState = { active: false, viewers: 0 };
-function findShareButton() {
-  const isOurs = (el) => !!el?.classList.contains("p2ps-voice-btn");
+function isVisible(el) {
+  if (!el || !el.isConnected) return false;
+  const r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+var isOurs = (el) => !!el?.classList.contains("p2ps-voice-btn");
+function climbToPeer(el) {
+  let node = el;
+  while (node.parentElement && node.parentElement !== document.body && node.parentElement.childElementCount === 1) {
+    node = node.parentElement;
+  }
+  return node;
+}
+function collectSites() {
+  const sites = [];
+  const anchors = /* @__PURE__ */ new Set();
   for (const path of document.querySelectorAll('button svg path[d^="M2 4.5C2 3.397"]')) {
     const btn = path.closest("button");
-    if (btn && !isOurs(btn)) return btn;
+    if (btn && !isOurs(btn)) anchors.add(btn);
   }
   for (const btn of document.querySelectorAll("button[aria-label]")) {
     if (isOurs(btn)) continue;
     const label = (btn.getAttribute("aria-label") || "").toLowerCase();
-    if (label.includes("tela") || label.includes("screen") || label.includes("share")) {
-      return btn;
-    }
+    if (!/compartilh|share/.test(label)) continue;
+    if (/cheia|fullscreen|convite|invite|link/.test(label)) continue;
+    anchors.add(btn);
   }
-  return null;
+  for (const anchor of anchors) {
+    if (anchor.closest('[class*="actionButtons"]')) continue;
+    const peer = climbToPeer(anchor);
+    sites.push({
+      host: anchor,
+      style: anchor,
+      place: (btn) => {
+        const wrapper = document.createElement("div");
+        wrapper.className = peer.className;
+        wrapper.appendChild(btn);
+        btn.__p2psWrapper = wrapper;
+        peer.insertAdjacentElement("afterend", wrapper);
+      }
+    });
+  }
+  for (const row of document.querySelectorAll('[class*="actionButtons"]')) {
+    const sibling = [...row.querySelectorAll("button")].find((b) => !isOurs(b));
+    if (!sibling) continue;
+    sites.push({
+      host: row,
+      style: sibling,
+      place: (btn) => row.appendChild(btn)
+    });
+  }
+  return sites;
 }
-function paintVoiceButton() {
-  if (!voiceBtn) return;
-  const svg = voiceBtn.querySelector("svg");
-  if (svg) {
-    svg.style.color = lastState.active ? "var(--status-danger, #ed4245)" : "";
-  }
-  voiceBtn.setAttribute(
-    "aria-label",
-    lastState.active ? `Parar transmiss\xE3o P2P \u2014 ${lastState.viewers} assistindo` : "Transmitir tela via P2P"
-  );
-  voiceBtn.title = voiceBtn.getAttribute("aria-label") || "";
-  voiceBtn.querySelector(".p2ps-voice-count")?.remove();
+function paintOne(btn) {
+  const svg = btn.querySelector("svg");
+  if (svg) svg.style.color = lastState.active ? "var(--status-danger, #ed4245)" : "";
+  const label = lastState.active ? `Parar transmiss\xE3o P2P \u2014 ${lastState.viewers} assistindo` : "Transmitir tela via P2P";
+  btn.setAttribute("aria-label", label);
+  btn.title = label;
+  btn.querySelector(".p2ps-voice-count")?.remove();
   if (lastState.active && lastState.viewers > 0) {
     const badge = document.createElement("span");
     badge.className = "p2ps-voice-count";
     badge.textContent = String(lastState.viewers);
-    voiceBtn.appendChild(badge);
+    btn.appendChild(badge);
   }
+}
+function removeBtn(btn) {
+  const wrapper = btn.__p2psWrapper;
+  (wrapper ?? btn).remove();
 }
 function mountVoiceButton(opts) {
   const sync = () => {
-    const anchor = findShareButton();
-    if (!anchor) {
-      voiceBtn?.remove();
-      voiceBtn = null;
-      opts.onAnchorChange(false);
-      return;
+    for (const [host2, btn] of voiceBtns) {
+      if (!host2.isConnected || !btn.isConnected) {
+        removeBtn(btn);
+        voiceBtns.delete(host2);
+      }
     }
-    if (voiceBtn && voiceBtn.isConnected && voiceBtn.previousElementSibling === anchor) {
-      opts.onAnchorChange(true);
-      return;
+    for (const site of collectSites()) {
+      if (voiceBtns.has(site.host)) continue;
+      const btn = document.createElement("button");
+      btn.className = `${site.style.className} p2ps-voice-btn`;
+      btn.type = "button";
+      btn.innerHTML = SCREENSHARE_SVG;
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        opts.onToggle();
+      });
+      site.place(btn);
+      paintOne(btn);
+      voiceBtns.set(site.host, btn);
     }
-    voiceBtn?.remove();
-    const btn = document.createElement("button");
-    btn.className = `${anchor.className} p2ps-voice-btn`;
-    btn.type = "button";
-    btn.innerHTML = SCREENSHARE_SVG;
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      opts.onToggle();
-    });
-    anchor.insertAdjacentElement("afterend", btn);
-    voiceBtn = btn;
-    paintVoiceButton();
-    opts.onAnchorChange(true);
+    opts.onAnchorChange([...voiceBtns.values()].some(isVisible));
+    applyLiveBadges();
+    dumpVoiceDiagnostics();
   };
   sync();
   let queued = false;
@@ -735,13 +790,70 @@ function mountVoiceButton(opts) {
   return () => {
     voiceObserver?.disconnect();
     voiceObserver = null;
-    voiceBtn?.remove();
-    voiceBtn = null;
+    for (const btn of voiceBtns.values()) removeBtn(btn);
+    voiceBtns.clear();
   };
+}
+var lastDumpKey = "";
+function dumpVoiceDiagnostics() {
+  try {
+    const sites = collectSites();
+    const key = sites.map((s) => s.host.className).join("|") + "#" + voiceBtns.size;
+    if (key === lastDumpKey) return;
+    lastDumpKey = key;
+    const data = {
+      quando: (/* @__PURE__ */ new Date()).toISOString(),
+      pontosEncontrados: sites.length,
+      injetados: [...voiceBtns.values()].map((b) => {
+        const r = b.getBoundingClientRect();
+        return {
+          visivel: isVisible(b),
+          tamanho: `${Math.round(r.width)}x${Math.round(r.height)}`,
+          pos: `${Math.round(r.x)},${Math.round(r.y)}`
+        };
+      }),
+      flutuante: launcher ? launcher.classList.contains("p2ps-launcher-hidden") ? "escondido" : "visivel" : "nao montado"
+    };
+    const fs = require("fs");
+    const path = require("path");
+    fs.writeFileSync(
+      path.join(BdApi.Plugins.folder, "p2pshare-debug.json"),
+      JSON.stringify(data, null, 2),
+      "utf8"
+    );
+  } catch (err) {
+    console.warn("[P2PShare] n\xE3o deu para gravar o diagn\xF3stico", err);
+  }
 }
 function updateVoiceButton(state) {
   lastState = state;
-  paintVoiceButton();
+  for (const btn of voiceBtns.values()) paintOne(btn);
+}
+var liveUsers = [];
+function applyLiveBadges() {
+  for (const row of document.querySelectorAll('[class*="voiceUser"]')) {
+    const nameEl = row.querySelector('[class*="username__"]');
+    const text = nameEl?.textContent?.trim();
+    const avatar = row.querySelector('[class*="userAvatar"]');
+    const id = (avatar?.style.backgroundImage || "").match(/avatars\/(\d+)\//)?.[1];
+    const live = liveUsers.some((u) => id && u.id === id || !!text && u.names.includes(text));
+    const existing = row.querySelector(".p2ps-live-chip");
+    if (!live) {
+      existing?.remove();
+      continue;
+    }
+    if (existing) continue;
+    const chip = document.createElement("span");
+    chip.className = "p2ps-live-chip";
+    chip.textContent = "AO VIVO";
+    chip.title = "Transmitindo via P2PShare";
+    const slot = row.querySelector('[class*="chipletParent"]') ?? nameEl?.parentElement;
+    slot?.appendChild(chip);
+  }
+}
+function setLiveUsers(users) {
+  liveUsers = users;
+  applyLiveBadges();
 }
 function thumbnailOf(source) {
   const raw = source;
@@ -989,6 +1101,7 @@ var host = {
   unmountOverlay,
   unmountAllOverlays,
   setOverlayViewers,
+  setLiveUsers,
   announceBeacon,
   revokeBeacon
 };
@@ -1418,6 +1531,13 @@ function notifyBeacons() {
   const list = [...beacons.values()];
   for (const listener of beaconListeners) listener(list);
 }
+function getActiveBeacons() {
+  return [...beacons.values()];
+}
+function onBeaconsChange(listener) {
+  beaconListeners.add(listener);
+  return () => beaconListeners.delete(listener);
+}
 function watchingCount() {
   return watching.size;
 }
@@ -1606,6 +1726,7 @@ var P2PShare = class {
   cleanupState = null;
   cleanupUpdater = null;
   cleanupVoiceBtn = null;
+  cleanupBeacons = null;
   start() {
     ui_exports.injectStyles();
     const toggle = () => {
@@ -1628,16 +1749,35 @@ var P2PShare = class {
       onToggle: toggle,
       onAnchorChange: (found) => ui_exports.setLauncherHidden(found)
     });
+    const refreshLive = () => {
+      const users = [];
+      if (getBroadcastState().active) {
+        const me = getCurrentUserId();
+        users.push({ id: me, names: [getUsername(me), getCurrentUsername()] });
+      }
+      for (const b of getActiveBeacons()) {
+        users.push({
+          id: b.broadcasterId,
+          names: [getUsername(b.broadcasterId), b.broadcasterName]
+        });
+      }
+      ui_exports.setLiveUsers(users);
+    };
+    this.cleanupBeacons = onBeaconsChange(refreshLive);
     this.cleanupState = onBroadcastStateChange((state) => {
       ui_exports.updateLauncher(state);
       ui_exports.updateVoiceButton(state);
+      refreshLive();
     });
     this.cleanupUpdater = startUpdateChecks();
+    setTimeout(() => ui_exports.dumpVoiceDiagnostics(), 8e3);
   }
   stop() {
     void stopBroadcast();
     this.cleanupState?.();
     this.cleanupState = null;
+    this.cleanupBeacons?.();
+    this.cleanupBeacons = null;
     this.cleanupVoiceBtn?.();
     this.cleanupVoiceBtn = null;
     this.cleanupUpdater?.();

@@ -210,6 +210,9 @@ const CSS = `
 }
 .p2ps-overlay-bar button:disabled { opacity: .4; cursor: default; }
 .p2ps-voice-btn { position: relative; }
+/* As classes do Discord nao dimensionam o icone: o SVG deles carrega
+   width/height proprios. Sem isto o botao existe com 0 pixel. */
+.p2ps-voice-btn svg { width: 20px; height: 20px; }
 .p2ps-voice-count {
     position: absolute;
     bottom: 0;
@@ -225,6 +228,20 @@ const CSS = `
     pointer-events: none;
 }
 .p2ps-launcher-hidden { display: none; }
+.p2ps-live-chip {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: 4px;
+    background: var(--status-danger, #ed4245);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    line-height: 14px;
+    white-space: nowrap;
+}
 .p2ps-overlay-bar button {
     background: none;
     border: none;
@@ -345,117 +362,171 @@ export function unmountLauncher(): void {
 
 // ------------------------------------------------- botao no painel de voz
 
-let voiceBtn: HTMLElement | null = null;
+/** elemento-âncora -> botao que injetamos por causa dele */
+const voiceBtns = new Map<HTMLElement, HTMLElement>();
 let voiceObserver: MutationObserver | null = null;
 let lastState = { active: false, viewers: 0 };
 
-/**
- * Acha o botao nativo de compartilhar tela no painel de voz.
- *
- * Estrategias em ordem de robustez. Nomes de classe do Discord sao hashes que
- * mudam a cada build, e aria-label muda com o idioma — o desenho do icone e' o
- * que sobrevive mais tempo, entao ele vem primeiro.
- */
-function findShareButton(): HTMLElement | null {
-    // O botao que injetamos usa o mesmo icone e um rotulo com "tela": sem esta
-    // exclusao ele viraria ancora de si mesmo a cada re-render.
-    const isOurs = (el: Element | null) => !!el?.classList.contains("p2ps-voice-btn");
-
-    // 1. pelo path do icone de compartilhar tela
-    for (const path of document.querySelectorAll('button svg path[d^="M2 4.5C2 3.397"]')) {
-        const btn = path.closest("button");
-        if (btn && !isOurs(btn)) return btn as HTMLElement;
-    }
-
-    // 2. pelo rotulo de acessibilidade, cobrindo pt e en
-    for (const btn of document.querySelectorAll<HTMLElement>("button[aria-label]")) {
-        if (isOurs(btn)) continue;
-
-        const label = (btn.getAttribute("aria-label") || "").toLowerCase();
-        if (label.includes("tela") || label.includes("screen") || label.includes("share")) {
-            return btn;
-        }
-    }
-
-    return null;
+function isVisible(el: HTMLElement | null): boolean {
+    if (!el || !el.isConnected) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
 }
 
-function paintVoiceButton(): void {
-    if (!voiceBtn) return;
+const isOurs = (el: Element | null) => !!el?.classList.contains("p2ps-voice-btn");
 
-    const svg = voiceBtn.querySelector("svg") as SVGElement | null;
-    if (svg) {
-        svg.style.color = lastState.active ? "var(--status-danger, #ed4245)" : "";
+/**
+ * Sobe ate' o nivel em que os controles sao irmaos.
+ *
+ * O Discord embrulha cada botao da barra em varios divs de um filho so'.
+ * Inserir dentro desse embrulho empilha o botao embaixo do vizinho em vez de
+ * ao lado; o lugar certo e' ao lado do bloco inteiro.
+ */
+function climbToPeer(el: HTMLElement): HTMLElement {
+    let node = el;
+    while (
+        node.parentElement &&
+        node.parentElement !== document.body &&
+        node.parentElement.childElementCount === 1
+    ) {
+        node = node.parentElement;
+    }
+    return node;
+}
+
+interface Site {
+    /** Elemento que identifica este ponto de injecao. */
+    host: HTMLElement;
+    /** De quem copiar as classes para o botao parecer nativo. */
+    style: HTMLElement;
+    place(btn: HTMLElement): void;
+}
+
+/**
+ * Onde cabe um botao P2P.
+ *
+ * Dois lugares, com estruturas diferentes: a barra da chamada, onde cada
+ * controle e' um bloco irmao, e o painel de voz do canto inferior esquerdo,
+ * onde os botoes sao filhos diretos de um contêiner.
+ */
+function collectSites(): Site[] {
+    const sites: Site[] = [];
+    const anchors = new Set<HTMLElement>();
+
+    for (const path of document.querySelectorAll('button svg path[d^="M2 4.5C2 3.397"]')) {
+        const btn = path.closest("button");
+        if (btn && !isOurs(btn)) anchors.add(btn as HTMLElement);
     }
 
-    voiceBtn.setAttribute(
-        "aria-label",
-        lastState.active
-            ? `Parar transmissão P2P — ${lastState.viewers} assistindo`
-            : "Transmitir tela via P2P"
-    );
-    voiceBtn.title = voiceBtn.getAttribute("aria-label") || "";
+    for (const btn of document.querySelectorAll<HTMLElement>("button[aria-label]")) {
+        if (isOurs(btn)) continue;
+        const label = (btn.getAttribute("aria-label") || "").toLowerCase();
+        // Exige intencao de COMPARTILHAR: so' "tela" casaria com "Tela cheia".
+        if (!/compartilh|share/.test(label)) continue;
+        if (/cheia|fullscreen|convite|invite|link/.test(label)) continue;
+        anchors.add(btn);
+    }
 
-    voiceBtn.querySelector(".p2ps-voice-count")?.remove();
+    // 1. barra da chamada
+    for (const anchor of anchors) {
+        // No painel lateral os botoes ja' sao irmaos diretos; tratado abaixo.
+        if (anchor.closest('[class*="actionButtons"]')) continue;
+
+        const peer = climbToPeer(anchor);
+        sites.push({
+            host: anchor,
+            style: anchor,
+            place: btn => {
+                const wrapper = document.createElement("div");
+                wrapper.className = peer.className;
+                wrapper.appendChild(btn);
+                (btn as any).__p2psWrapper = wrapper;
+                peer.insertAdjacentElement("afterend", wrapper);
+            }
+        });
+    }
+
+    // 2. painel de voz do canto inferior esquerdo
+    for (const row of document.querySelectorAll<HTMLElement>('[class*="actionButtons"]')) {
+        const sibling = [...row.querySelectorAll<HTMLElement>("button")].find(b => !isOurs(b));
+        if (!sibling) continue;
+
+        sites.push({
+            host: row,
+            style: sibling,
+            place: btn => row.appendChild(btn)
+        });
+    }
+
+    return sites;
+}
+
+function paintOne(btn: HTMLElement): void {
+    const svg = btn.querySelector("svg") as SVGElement | null;
+    if (svg) svg.style.color = lastState.active ? "var(--status-danger, #ed4245)" : "";
+
+    const label = lastState.active
+        ? `Parar transmissão P2P — ${lastState.viewers} assistindo`
+        : "Transmitir tela via P2P";
+    btn.setAttribute("aria-label", label);
+    btn.title = label;
+
+    btn.querySelector(".p2ps-voice-count")?.remove();
     if (lastState.active && lastState.viewers > 0) {
         const badge = document.createElement("span");
         badge.className = "p2ps-voice-count";
         badge.textContent = String(lastState.viewers);
-        voiceBtn.appendChild(badge);
+        btn.appendChild(badge);
     }
 }
 
-/**
- * Injeta um botao P2P ao lado do botao nativo de tela.
- *
- * `onAnchorChange` avisa se o botao nativo existe: quem chama usa isso para
- * mostrar o botao flutuante como reserva quando o Discord mudar o HTML e a
- * injecao parar de funcionar.
- */
+function removeBtn(btn: HTMLElement): void {
+    const wrapper = (btn as any).__p2psWrapper as HTMLElement | undefined;
+    (wrapper ?? btn).remove();
+}
+
 export function mountVoiceButton(opts: {
     onToggle: () => void;
-    onAnchorChange: (found: boolean) => void;
+    onAnchorChange: (visible: boolean) => void;
 }): () => void {
     const sync = () => {
-        const anchor = findShareButton();
-
-        if (!anchor) {
-            voiceBtn?.remove();
-            voiceBtn = null;
-            opts.onAnchorChange(false);
-            return;
+        for (const [host, btn] of voiceBtns) {
+            if (!host.isConnected || !btn.isConnected) {
+                removeBtn(btn);
+                voiceBtns.delete(host);
+            }
         }
 
-        // Ja injetado e ainda no lugar certo: nada a fazer.
-        if (voiceBtn && voiceBtn.isConnected && voiceBtn.previousElementSibling === anchor) {
-            opts.onAnchorChange(true);
-            return;
+        for (const site of collectSites()) {
+            if (voiceBtns.has(site.host)) continue;
+
+            const btn = document.createElement("button");
+            // Herda as classes do vizinho: nasce com o visual do Discord.
+            btn.className = `${site.style.className} p2ps-voice-btn`;
+            btn.type = "button";
+            btn.innerHTML = SCREENSHARE_SVG;
+            btn.addEventListener("click", e => {
+                e.preventDefault();
+                e.stopPropagation();
+                opts.onToggle();
+            });
+
+            site.place(btn);
+            paintOne(btn);
+            voiceBtns.set(site.host, btn);
         }
 
-        voiceBtn?.remove();
-
-        const btn = document.createElement("button");
-        // Herda as classes do vizinho: assim ele ja nasce com o visual do
-        // Discord, sem a gente adivinhar tamanho, cor e estados de hover.
-        btn.className = `${anchor.className} p2ps-voice-btn`;
-        btn.type = "button";
-        btn.innerHTML = SCREENSHARE_SVG;
-        btn.addEventListener("click", e => {
-            e.preventDefault();
-            e.stopPropagation();
-            opts.onToggle();
-        });
-
-        anchor.insertAdjacentElement("afterend", btn);
-        voiceBtn = btn;
-        paintVoiceButton();
-        opts.onAnchorChange(true);
+        // Achar onde injetar nao basta: um botao invisivel deixaria o usuario
+        // sem forma de transmitir, e o flutuante ja teria sido escondido.
+        opts.onAnchorChange([...voiceBtns.values()].some(isVisible));
+        // A lista de participantes re-renderiza sozinha; o selo precisa voltar.
+        applyLiveBadges();
+        dumpVoiceDiagnostics();
     };
 
     sync();
 
-    // O Discord muta o DOM o tempo todo; rodar querySelector a cada mutacao
-    // custaria caro. Junta tudo num sync por quadro.
+    // O Discord muta o DOM o tempo todo: junta tudo num sync por quadro.
     let queued = false;
     const schedule = () => {
         if (queued) return;
@@ -472,14 +543,105 @@ export function mountVoiceButton(opts: {
     return () => {
         voiceObserver?.disconnect();
         voiceObserver = null;
-        voiceBtn?.remove();
-        voiceBtn = null;
+        for (const btn of voiceBtns.values()) removeBtn(btn);
+        voiceBtns.clear();
     };
+}
+
+let lastDumpKey = "";
+
+/** Fotografa o estado da injecao num arquivo, ja que o DevTools vive desligado. */
+export function dumpVoiceDiagnostics(): void {
+    try {
+        const sites = collectSites();
+        const key = sites.map(s => s.host.className).join("|") + "#" + voiceBtns.size;
+        if (key === lastDumpKey) return;
+        lastDumpKey = key;
+
+        const data = {
+            quando: new Date().toISOString(),
+            pontosEncontrados: sites.length,
+            injetados: [...voiceBtns.values()].map(b => {
+                const r = b.getBoundingClientRect();
+                return {
+                    visivel: isVisible(b),
+                    tamanho: `${Math.round(r.width)}x${Math.round(r.height)}`,
+                    pos: `${Math.round(r.x)},${Math.round(r.y)}`
+                };
+            }),
+            flutuante: launcher
+                ? (launcher.classList.contains("p2ps-launcher-hidden") ? "escondido" : "visivel")
+                : "nao montado"
+        };
+
+        const fs = require("fs");
+        const path = require("path");
+        fs.writeFileSync(
+            path.join(BdApi.Plugins.folder, "p2pshare-debug.json"),
+            JSON.stringify(data, null, 2),
+            "utf8"
+        );
+    } catch (err) {
+        console.warn("[P2PShare] não deu para gravar o diagnóstico", err);
+    }
 }
 
 export function updateVoiceButton(state: { active: boolean; viewers: number; }): void {
     lastState = state;
-    paintVoiceButton();
+    for (const btn of voiceBtns.values()) paintOne(btn);
+}
+
+
+// ------------------------------------------------- selo AO VIVO na lista
+
+export interface LiveUser {
+    id: string;
+    /** Nome de exibicao e username: o painel pode mostrar qualquer um dos dois. */
+    names: string[];
+}
+
+let liveUsers: LiveUser[] = [];
+
+/**
+ * Marca quem esta transmitindo na lista de participantes do canal.
+ *
+ * Casa por id sempre que da': o avatar do Discord traz o id do usuario na
+ * URL. Nome fica como reserva, porque quem usa avatar padrao nao tem id na
+ * imagem — e nome de exibicao pode divergir do username.
+ */
+function applyLiveBadges(): void {
+    for (const row of document.querySelectorAll<HTMLElement>('[class*="voiceUser"]')) {
+        const nameEl = row.querySelector<HTMLElement>('[class*="username__"]');
+        const text = nameEl?.textContent?.trim();
+
+        const avatar = row.querySelector<HTMLElement>('[class*="userAvatar"]');
+        const id = (avatar?.style.backgroundImage || "").match(/avatars\/(\d+)\//)?.[1];
+
+        const live = liveUsers.some(u =>
+            (id && u.id === id) || (!!text && u.names.includes(text)));
+
+        const existing = row.querySelector(".p2ps-live-chip");
+
+        if (!live) {
+            existing?.remove();
+            continue;
+        }
+        if (existing) continue;
+
+        const chip = document.createElement("span");
+        chip.className = "p2ps-live-chip";
+        chip.textContent = "AO VIVO";
+        chip.title = "Transmitindo via P2PShare";
+
+        // chiplet e' onde o Discord poe os proprios selos ao lado do nome.
+        const slot = row.querySelector('[class*="chipletParent"]') ?? nameEl?.parentElement;
+        slot?.appendChild(chip);
+    }
+}
+
+export function setLiveUsers(users: LiveUser[]): void {
+    liveUsers = users;
+    applyLiveBadges();
 }
 
 // ------------------------------------------------------------ source picker
