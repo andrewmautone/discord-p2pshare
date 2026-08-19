@@ -234,9 +234,31 @@ function localHelperIsValid(): boolean {
     }
 }
 
-/** Já instalado e na versão que este plugin espera? */
+/**
+ * Já instalado e na versão que este plugin espera?
+ *
+ * Limpa o registro de erro quando encontra o arquivo certo: uma falha antiga
+ * — de antes de o instalador colocar o componente, por exemplo — não pode
+ * seguir aparecendo na tela depois de resolvida.
+ */
 export function helperReady(): boolean {
-    return localHelperIsValid();
+    const valid = localHelperIsValid();
+
+    if (valid && lastError) {
+        lastError = null;
+        clearDiagnostics();
+    }
+
+    return valid;
+}
+
+function clearDiagnostics(): void {
+    try {
+        const fs = require("fs");
+        const path = require("path");
+        const file = path.join(BdApi.Plugins.folder, "p2pshare-audio-debug.json");
+        if (fs.existsSync(file)) fs.unlinkSync(file);
+    } catch { /* diagnóstico é acessório */ }
 }
 
 let downloading: Promise<string | null> | null = null;

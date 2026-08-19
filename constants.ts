@@ -9,7 +9,7 @@ export const PROTOCOL_VERSION = 1;
 export const PLUGIN_URL = "https://github.com/andrewmautone/discord-p2pshare";
 
 /** Versão publicada. O build do BetterDiscord escreve isto no cabeçalho. */
-export const PLUGIN_VERSION = "1.13.0";
+export const PLUGIN_VERSION = "1.13.1";
 
 /** Link direto do instalador na release mais recente. */
 export const DOWNLOAD_URL =

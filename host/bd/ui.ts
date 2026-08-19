@@ -1177,9 +1177,15 @@ export function openSourcePicker(sources: CaptureSource[]): Promise<CaptureChoic
 
         audioCheck.disabled = !audioAvailable;
         audioCheck.checked = audioAvailable && BdApi.Data.load("P2PShare", "captureAudio") !== false;
+
+        // Motivos diferentes exigem textos diferentes: "não instalado" quando
+        // o componente falta, e outra coisa quando ele existe mas foi
+        // desligado depois de derrubar o Discord.
         audioLabel.textContent = audioAvailable
             ? "Transmitir áudio"
-            : "Áudio indisponível — componente ainda não instalado";
+            : nativeAudioBlocked()
+                ? "Áudio desligado — a última tentativa derrubou o Discord"
+                : "Áudio indisponível — componente ainda não instalado";
         audioCheck.addEventListener("change", () =>
             BdApi.Data.save("P2PShare", "captureAudio", audioCheck.checked));
 

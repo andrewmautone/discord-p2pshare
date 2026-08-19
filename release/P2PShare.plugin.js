@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.13.0
+ * @version 1.13.1
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.13.0";
+var PLUGIN_VERSION = "1.13.1";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "3b71f2742c6e92b0dd9621a332a55ce0dc51b19ded802c9bfa548de9e476b3cf";
@@ -508,7 +508,21 @@ function localHelperIsValid() {
   }
 }
 function helperReady() {
-  return localHelperIsValid();
+  const valid = localHelperIsValid();
+  if (valid && lastError) {
+    lastError = null;
+    clearDiagnostics();
+  }
+  return valid;
+}
+function clearDiagnostics() {
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    const file = path.join(BdApi.Plugins.folder, "p2pshare-audio-debug.json");
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+  } catch {
+  }
 }
 var downloading = null;
 function ensureHelper() {
@@ -1603,7 +1617,7 @@ function openSourcePicker(sources) {
     const audioAvailable = helperReady() && !nativeAudioBlocked();
     audioCheck.disabled = !audioAvailable;
     audioCheck.checked = audioAvailable && BdApi.Data.load("P2PShare", "captureAudio") !== false;
-    audioLabel.textContent = audioAvailable ? "Transmitir \xE1udio" : "\xC1udio indispon\xEDvel \u2014 componente ainda n\xE3o instalado";
+    audioLabel.textContent = audioAvailable ? "Transmitir \xE1udio" : nativeAudioBlocked() ? "\xC1udio desligado \u2014 a \xFAltima tentativa derrubou o Discord" : "\xC1udio indispon\xEDvel \u2014 componente ainda n\xE3o instalado";
     audioCheck.addEventListener("change", () => BdApi.Data.save("P2PShare", "captureAudio", audioCheck.checked));
     let settled = false;
     const settle = (id) => {

@@ -364,6 +364,7 @@ begin
     if InstalledVer <> '' then
     begin
       MsgBox('P2PShare atualizado: ' + InstalledVer + ' -> ' + '{#AppVersion}' + '.' + #13#10 + #13#10 +
+             'O componente de audio tambem foi atualizado.' + #13#10 + #13#10 +
              'O BetterDiscord recarrega o plugin sozinho. Se nao recarregar, ' +
              'desligue e ligue o P2PShare em Configuracoes > Plugins.',
              mbInformation, MB_OK);
