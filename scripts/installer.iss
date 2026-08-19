@@ -12,6 +12,7 @@
 #define AppPublisher "Andrew"
 #define AppUrl       "https://github.com/andrewmautone/vencord-p2pshare"
 #define BdInstaller  "https://github.com/BetterDiscord/Installer/releases/latest/download/BetterDiscord-Windows.exe"
+#define VcInstaller  "https://github.com/Vencord/Installer/releases/latest/download/VencordInstallerCli.exe"
 
 [Setup]
 AppId={{8E3A17C4-5B2D-4F91-9E6A-7C4D2B1F0A83}
@@ -61,9 +62,61 @@ begin
   Result := DirExists(ExpandConstant('{userappdata}\BetterDiscord'));
 end;
 
+{ O patcher e o arquivo que o Discord carrega quando esta com Vencord.
+  Checar por ele, e nao pela pasta, evita falso positivo de quem desinstalou
+  o Vencord mas manteve temas e configuracoes salvos. }
 function VencordPresent(): Boolean;
 begin
-  Result := DirExists(ExpandConstant('{userappdata}\Vencord'));
+  Result := FileExists(ExpandConstant('{userappdata}\Vencord\dist\patcher.js'));
+end;
+
+{ Desinstala o Vencord chamando o CLI oficial deles.
+  Nao desfazemos o patch na mao pelo mesmo motivo de nao aplicarmos o do
+  BetterDiscord: errar ali quebraria o Discord de quem esta rodando isto. }
+function UninstallVencord(): Boolean;
+var
+  Cli: String;
+  Branches: array[0..2] of String;
+  I, ResultCode: Integer;
+begin
+  Result := False;
+
+  if MsgBox('Feche o Discord completamente antes de continuar.' + #13#10 + #13#10 +
+            'Inclusive pelo icone na bandeja do sistema, perto do relogio — ' +
+            'fechar so a janela nao basta.' + #13#10 + #13#10 +
+            'Ja fechou?',
+            mbConfirmation, MB_YESNO) = IDNO then
+    Exit;
+
+  try
+    DownloadTemporaryFile('{#VcInstaller}', 'VencordInstallerCli.exe', '', nil);
+  except
+    MsgBox('Nao consegui baixar o desinstalador do Vencord.' + #13#10 +
+           'Verifique sua conexao e tente de novo.', mbError, MB_OK);
+    Exit;
+  end;
+
+  Cli := ExpandConstant('{tmp}\VencordInstallerCli.exe');
+  if not FileExists(Cli) then
+  begin
+    MsgBox('O download do desinstalador do Vencord nao completou.', mbError, MB_OK);
+    Exit;
+  end;
+
+  Branches[0] := 'stable';
+  Branches[1] := 'ptb';
+  Branches[2] := 'canary';
+
+  { Roda para cada branch: o CLI simplesmente nao faz nada nas que nao existem. }
+  for I := 0 to 2 do
+    Exec(Cli, '-uninstall -branch ' + Branches[I], '', SW_HIDE,
+         ewWaitUntilTerminated, ResultCode);
+
+  { Tira o codigo injetado, mas preserva configuracoes e temas do usuario
+    caso ele queira voltar para o Vencord um dia. }
+  DelTree(ExpandConstant('{userappdata}\Vencord\dist'), True, True, True);
+
+  Result := not VencordPresent();
 end;
 
 { Baixa e roda o instalador oficial do BetterDiscord.
@@ -110,19 +163,46 @@ begin
 end;
 
 function InitializeSetup(): Boolean;
+var
+  Labels: TArrayOfString;
+  Answer: Integer;
 begin
   Result := True;
 
   if VencordPresent() then
   begin
-    if MsgBox('Encontrei o Vencord instalado nesta maquina.' + #13#10 + #13#10 +
-              'BetterDiscord e Vencord modificam o Discord no mesmo lugar, e ' +
-              'rodar os dois junto costuma dar problema.' + #13#10 + #13#10 +
-              'Continuar mesmo assim?',
-              mbConfirmation, MB_YESNO) = IDNO then
+    SetArrayLength(Labels, 3);
+    Labels[0] := 'Remover o Vencord e continuar';
+    Labels[1] := 'Manter os dois (nao recomendado)';
+    Labels[2] := 'Cancelar';
+
+    Answer := TaskDialogMsgBox(
+      'O Vencord esta instalado nesta maquina',
+      'BetterDiscord e Vencord modificam o Discord no mesmo lugar. Rodar os ' +
+      'dois junto costuma dar problema.' + #13#10 + #13#10 +
+      'Posso remover o Vencord para voce usando o desinstalador oficial dele. ' +
+      'Suas configuracoes e temas do Vencord ficam salvos, caso voce queira ' +
+      'voltar depois.',
+      mbConfirmation, MB_YESNOCANCEL, Labels, 0);
+
+    if Answer = IDCANCEL then
     begin
       Result := False;
       Exit;
+    end;
+
+    if Answer = IDYES then
+    begin
+      if not UninstallVencord() then
+      begin
+        MsgBox('Nao consegui remover o Vencord.' + #13#10 + #13#10 +
+               'Desinstale manualmente pelo instalador do Vencord e rode ' +
+               'este instalador de novo.', mbError, MB_OK);
+        Result := False;
+        Exit;
+      end;
+
+      MsgBox('Vencord removido.', mbInformation, MB_OK);
     end;
   end;
 
