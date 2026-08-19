@@ -25,6 +25,8 @@ export interface CaptureDeps {
     getUserMedia?: (constraints: any) => Promise<MediaStream>;
     getSources?: () => Promise<CaptureSource[]>;
     pickSource?: (sources: CaptureSource[]) => Promise<string | null>;
+    /** Junta trilhas de origens diferentes num stream só. */
+    combine?: (tracks: MediaStreamTrack[]) => MediaStream;
 }
 
 const defaultDeps: Required<CaptureDeps> = {
@@ -44,7 +46,9 @@ const defaultDeps: Required<CaptureDeps> = {
     },
 
     // Sem seletor injetado, transmite a primeira fonte (a tela principal).
-    pickSource: async sources => sources[0]?.id ?? null
+    pickSource: async sources => sources[0]?.id ?? null,
+
+    combine: tracks => new MediaStream(tracks)
 };
 
 export interface CaptureOptions {
@@ -56,6 +60,16 @@ export interface CaptureOptions {
      * aplicativo exposta ao Electron, então a saída é poder desligar.
      */
     audio?: boolean;
+
+    /**
+     * Capturar o áudio deste dispositivo de entrada em vez do sistema inteiro.
+     *
+     * É a única forma de transmitir o áudio de um app só sem código nativo:
+     * o Windows não expõe captura por processo ao Chromium, mas roteando o app
+     * para um cabo virtual (VB-Cable e afins) o áudio dele vira um dispositivo
+     * de entrada comum, que aqui é capturável.
+     */
+    audioDeviceId?: string | null;
 }
 
 /**
@@ -92,6 +106,27 @@ export async function captureScreen(
                 maxFrameRate: 60
             }
         };
+
+        // Dispositivo escolhido: vídeo e áudio vêm de chamadas separadas e são
+        // juntados depois, porque as constraints são incompatíveis entre si.
+        if (wantAudio && opts.audioDeviceId) {
+            const videoOnly = await d.getUserMedia({ audio: false, video })
+                .catch((err: Error) => {
+                    throw new CaptureError(`falha ao capturar a fonte: ${err.message}`);
+                });
+
+            try {
+                const mic = await d.getUserMedia({
+                    audio: { deviceId: { exact: opts.audioDeviceId } },
+                    video: false
+                });
+                return d.combine([...videoOnly.getTracks(), ...mic.getTracks()]);
+            } catch (err) {
+                // Dispositivo sumiu ou foi negado: melhor mudo que sem transmissão.
+                console.warn("[P2PShare] dispositivo de áudio indisponível", err);
+                return videoOnly;
+            }
+        }
 
         // Áudio do sistema (loopback). No Electron isto exige chromeMediaSource
         // "desktop" também no áudio — sem esse bloco a transmissão vai muda.

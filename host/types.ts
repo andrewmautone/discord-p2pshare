@@ -38,6 +38,17 @@ export interface OverlayOptions {
     muted?: boolean;
     /** Texto do botão de fechar. O padrão não diz o que realmente acontece. */
     closeLabel?: string;
+    /**
+     * Dono da transmissão. Com ele o vídeo pode ser pintado dentro do quadro
+     * dessa pessoa na grade da chamada, em vez de numa janela solta.
+     */
+    userId?: string;
+
+    /**
+     * Permite fechar. Falso na prévia da própria tela: ali não existe
+     * "parar de assistir", e o botão só ocuparia espaço no quadro.
+     */
+    closable?: boolean;
 }
 
 export interface Host {
@@ -64,6 +75,11 @@ export interface Host {
 
     onMessageCreate(handler: (message: HostMessage) => void): () => void;
     onMessageDelete(handler: (channelId: string, messageId: string) => void): () => void;
+    /**
+     * Avisa quando o usuário entra, sai ou troca de canal de voz.
+     * `null` significa que ele saiu da voz.
+     */
+    onVoiceChannelChange(handler: (channelId: string | null) => void): () => void;
 
     // --- interface ---
     toast(message: string, kind: ToastKind): void;
@@ -76,6 +92,11 @@ export interface Host {
      * Discord para a chamada.
      */
     shouldCaptureAudio(): boolean;
+    /**
+     * Dispositivo de entrada a capturar, ou null para o áudio do sistema.
+     * Serve para transmitir só o áudio de um app roteado a um cabo virtual.
+     */
+    getAudioDeviceId(): string | null;
     /** Abre o seletor de tela/janela. Resolve com null se o usuário cancelar. */
     pickSource(sources: CaptureSource[]): Promise<string | null>;
 
@@ -111,5 +132,10 @@ export interface Host {
      * Cada entrada traz o id e os nomes possíveis, porque o painel mostra ora
      * o nome de exibição, ora o username.
      */
-    setLiveUsers(users: { id: string; names: string[]; }[]): void;
+    setLiveUsers(users: {
+        id: string;
+        names: string[];
+        /** Ausente quando é o próprio usuário transmitindo. */
+        onWatch?: () => void;
+    }[]): void;
 }

@@ -5,7 +5,7 @@
  */
 
 import { embedPayload, extractPayload, type HandshakeKind } from "./codec";
-import { PLUGIN_URL, PROTOCOL_VERSION } from "./constants";
+import { DOWNLOAD_URL, PROTOCOL_VERSION } from "./constants";
 
 /**
  * Formato de fio do beacon e do handshake. Módulo puro de propósito: nada aqui
@@ -36,13 +36,22 @@ export interface Beacon {
 }
 
 /**
- * Texto do beacon. Quem não tem o plugin lê a mensagem normalmente e vê o link
- * de instalação; o sessionId viaja invisível no fim.
+ * Texto do beacon.
+ *
+ * Fala com dois públicos ao mesmo tempo: quem já tem o plugin precisa saber
+ * onde clicar, e quem não tem precisa de um caminho curto até o instalador —
+ * um link para a página do projeto obriga a pessoa a caçar o download.
+ *
+ * O sessionId viaja invisível no fim.
  */
 export function beaconContent(sessionId: string, username: string): string {
     const visible =
-        `🔴 **${username}** está transmitindo a tela via P2P.\n` +
-        `Instale o plugin para assistir: ${PLUGIN_URL}`;
+        `# 🔴 ${username} está transmitindo a tela\n` +
+        "**Já tem o P2PShare?** Clique em **AO VIVO** no quadro dele na chamada " +
+        "e a tela abre por cima do avatar.\n" +
+        `**Ainda não tem?** [Baixar o instalador](${DOWNLOAD_URL})\n` +
+        "-# Vídeo ponto-a-ponto, direto entre os computadores. " +
+        "Não passa por servidor nenhum.";
 
     return embedPayload(visible, { v: PROTOCOL_VERSION, s: sessionId } satisfies BeaconPayload);
 }

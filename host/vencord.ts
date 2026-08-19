@@ -17,7 +17,7 @@ import {
     sendMessage,
     uploadTextAttachment
 } from "../discord/api";
-import { onMessageCreate, onMessageDelete } from "../discord/events";
+import { onMessageCreate, onMessageDelete, onVoiceChannelChange } from "../discord/events";
 import { settings } from "../settings";
 import { openSourcePicker } from "../ui/SourcePicker";
 import { mountOverlay, setOverlayViewers, unmountAllOverlays, unmountOverlay } from "../ui/ViewerOverlay";
@@ -43,10 +43,12 @@ export const host: Host = {
 
     onMessageCreate,
     onMessageDelete,
+    onVoiceChannelChange,
 
     toast: (message, kind) => showToast(message, TOAST_TYPE[kind]),
     getBudgetMbps: () => settings.store.uploadBudgetMbps,
     shouldCaptureAudio: () => settings.store.captureAudio,
+    getAudioDeviceId: () => settings.store.audioDeviceId || null,
     pickSource: openSourcePicker,
 
     mountOverlay,

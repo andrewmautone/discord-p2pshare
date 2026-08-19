@@ -33,10 +33,12 @@ export const host: Host = {
 
     onMessageCreate: api.onMessageCreate,
     onMessageDelete: api.onMessageDelete,
+    onVoiceChannelChange: api.onVoiceChannelChange,
 
     toast: (message, kind) => BdApi.UI.showToast(message, { type: TOAST_TYPE[kind] }),
     getBudgetMbps: () => loadSetting("uploadBudgetMbps", DEFAULT_BUDGET_MBPS),
     shouldCaptureAudio: () => loadSetting("captureAudio", true),
+    getAudioDeviceId: () => loadSetting<string | null>("audioDeviceId", null),
     pickSource: ui.openSourcePicker,
 
     mountOverlay: ui.mountOverlay,

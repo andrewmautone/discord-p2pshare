@@ -22,6 +22,26 @@ export function onMessageCreate(handler: (message: DiscordMessage) => void): () 
     return () => FluxDispatcher.unsubscribe("MESSAGE_CREATE", listener);
 }
 
+
+/**
+ * Entrada, saída e troca de canal de voz.
+ * O Discord dispara VOICE_CHANNEL_SELECT com channelId null ao desconectar.
+ */
+export function onVoiceChannelChange(
+    handler: (channelId: string | null) => void
+): () => void {
+    const listener = (event: { channelId?: string | null; }) => {
+        try {
+            handler(event.channelId ?? null);
+        } catch (err) {
+            console.error("[P2PShare] handler de VOICE_CHANNEL_SELECT falhou", err);
+        }
+    };
+
+    FluxDispatcher.subscribe("VOICE_CHANNEL_SELECT" as any, listener);
+    return () => FluxDispatcher.unsubscribe("VOICE_CHANNEL_SELECT" as any, listener);
+}
+
 /** Assina MESSAGE_DELETE. Devolve a função de cancelamento. */
 export function onMessageDelete(handler: (channelId: string, messageId: string) => void): () => void {
     const listener = (event: { channelId: string; id: string; }) => {

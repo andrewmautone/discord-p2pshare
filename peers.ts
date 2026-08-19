@@ -8,6 +8,16 @@ import { computePerPeerBitrate } from "./bitrate";
 import type { HandshakeKind } from "./codec";
 import { ICE_GATHER_TIMEOUT_MS, ICE_SERVERS, PEER_CONNECT_TIMEOUT_MS } from "./constants";
 
+/**
+ * Qualidade pedida ao codificador, aplicada em todos os peers.
+ *
+ * `scaleResolutionDownBy` divide a resolucao da captura; 1 mantem o original.
+ */
+export interface BroadcastQuality {
+    maxFramerate?: number;
+    scaleResolutionDownBy?: number;
+}
+
 export interface PeerTransport {
     send(kind: HandshakeKind, targetUserId: string, sdp: string): Promise<void>;
 }
@@ -51,6 +61,7 @@ export class BroadcastPeers {
     private readonly budgetMbps: number;
 
     onCountChange?: (count: number) => void;
+    private quality: BroadcastQuality = {};
 
     constructor(
         private readonly stream: MediaStream,
@@ -98,6 +109,12 @@ export class BroadcastPeers {
         await this.transport.send("answer", fromUserId, pc.localDescription?.sdp ?? answer.sdp!);
     }
 
+    /** Troca a qualidade em transmissao, sem recapturar a tela. */
+    setQuality(quality: BroadcastQuality): void {
+        this.quality = quality;
+        this.applyBitrate();
+    }
+
     removePeer(userId: string): void {
         const pc = this.peers.get(userId);
         if (!pc) return;
@@ -133,6 +150,12 @@ export class BroadcastPeers {
                 if (!params.encodings?.length) params.encodings = [{}];
                 params.encodings[0].maxBitrate = maxBitrate;
                 params.degradationPreference = "maintain-framerate";
+
+                // undefined remove o limite; nao adianta apagar a chave, o
+                // Chromium mantem o ultimo valor aplicado.
+                params.encodings[0].maxFramerate = this.quality.maxFramerate;
+                params.encodings[0].scaleResolutionDownBy =
+                    this.quality.scaleResolutionDownBy ?? 1;
 
                 sender.setParameters(params).catch(err =>
                     console.warn("[P2PShare] não deu para aplicar o bitrate", err));
@@ -173,6 +196,13 @@ export class ViewerPeer {
 
         pc.onconnectionstatechange = () => {
             if (pc.connectionState === "connected") this.clearTimer();
+
+            // O emissor fechou o Discord ou saiu do canal: a conexão morre e
+            // não há por que manter uma janela preta aberta.
+            if (pc.connectionState === "closed" || pc.connectionState === "disconnected") {
+                this.fail("a transmissão foi encerrada");
+            }
+
             if (pc.connectionState === "failed") {
                 this.fail(
                     "a conexão P2P falhou — provável NAT simétrico (CGNAT). " +

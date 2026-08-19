@@ -49,6 +49,45 @@ describe("captureScreen", () => {
         );
     });
 
+    it("captura de um dispositivo especifico quando escolhido", async () => {
+        const constraints: any[] = [];
+        const videoTrack = { kind: "video" } as MediaStreamTrack;
+        const audioTrack = { kind: "audio" } as MediaStreamTrack;
+        let combined: MediaStreamTrack[] = [];
+
+        await captureScreen({
+            getSources: async () => twoSources,
+            pickSource: async () => "screen:0",
+            getUserMedia: async (c: any) => {
+                constraints.push(c);
+                return {
+                    getTracks: () => (c.video ? [videoTrack] : [audioTrack])
+                } as unknown as MediaStream;
+            },
+            combine: tracks => { combined = tracks; return {} as MediaStream; }
+        }, { audioDeviceId: "cabo-virtual" });
+
+        assert.equal(constraints[0].audio, false, "video vem sem audio");
+        assert.deepEqual(constraints[1].audio, { deviceId: { exact: "cabo-virtual" } });
+        assert.deepEqual(combined, [videoTrack, audioTrack], "junta as duas trilhas");
+    });
+
+    it("segue so com video quando o dispositivo escolhido falha", async () => {
+        const videoTrack = { kind: "video" } as MediaStreamTrack;
+        const videoStream = { getTracks: () => [videoTrack] } as unknown as MediaStream;
+
+        const stream = await captureScreen({
+            getSources: async () => twoSources,
+            pickSource: async () => "screen:0",
+            getUserMedia: async (c: any) => {
+                if (c.video) return videoStream;
+                throw new Error("dispositivo removido");
+            }
+        }, { audioDeviceId: "sumiu" });
+
+        assert.equal(stream, videoStream, "melhor mudo que sem transmissao");
+    });
+
     it("nao pede audio quando o usuario desligou", async () => {
         const attempts: any[] = [];
 

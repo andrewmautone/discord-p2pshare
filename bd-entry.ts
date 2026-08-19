@@ -4,12 +4,19 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { getBroadcastState, onBroadcastStateChange, startBroadcast, stopBroadcast } from "./broadcast";
+import {
+    getBroadcastState,
+    getQuality,
+    onBroadcastStateChange,
+    setQuality,
+    startBroadcast,
+    stopBroadcast
+} from "./broadcast";
 import { DEFAULT_BUDGET_MBPS } from "./constants";
 import { loadSetting, saveSetting, ui } from "./host/bd";
 import { getCurrentUserId, getCurrentUsername, getUsername } from "./host/bd/api";
 import { startUpdateChecks } from "./host/bd/updater";
-import { getActiveBeacons, initWatcher, onBeaconsChange } from "./watch";
+import { getActiveBeacons, initWatcher, isWatching, onBeaconsChange, startWatching } from "./watch";
 
 declare const BdApi: any;
 
@@ -30,9 +37,19 @@ export default class P2PShare {
     start(): void {
         ui.injectStyles();
 
-        const toggle = () => {
-            if (getBroadcastState().active) void stopBroadcast();
-            else void startBroadcast();
+        // Parado, o botão inicia. Transmitindo, ele abre o menu — parar vira
+        // uma opção lá dentro, junto de resolução e taxa de quadros.
+        const toggle = (anchor: HTMLElement) => {
+            if (!getBroadcastState().active) {
+                void startBroadcast();
+                return;
+            }
+
+            ui.openBroadcastMenu(anchor, {
+                quality: getQuality(),
+                onQuality: q => setQuality(q),
+                onStop: () => { void stopBroadcast(); }
+            });
         };
 
         this.cleanupWatcher = initWatcher();
@@ -60,7 +77,7 @@ export default class P2PShare {
         // Quem aparece com AO VIVO: eu, se estiver transmitindo, mais todo
         // beacon ativo no canal.
         const refreshLive = () => {
-            const users: { id: string; names: string[]; }[] = [];
+            const users: { id: string; names: string[]; onWatch?: () => void; }[] = [];
 
             if (getBroadcastState().active) {
                 const me = getCurrentUserId();
@@ -70,7 +87,16 @@ export default class P2PShare {
             for (const b of getActiveBeacons()) {
                 users.push({
                     id: b.broadcasterId,
-                    names: [getUsername(b.broadcasterId), b.broadcasterName]
+                    names: [getUsername(b.broadcasterId), b.broadcasterName],
+                    // Já assistindo: o selo vira informativo, sem ação repetida.
+                    onWatch: isWatching(b.sessionId)
+                        ? undefined
+                        : () => {
+                            // Da lista lateral dá para clicar sem estar vendo a
+                            // chamada; sem isto o vídeo abriria fora de vista.
+                            ui.focusChannel(b.channelId);
+                            void startWatching(b);
+                        }
                 });
             }
 
@@ -183,7 +209,49 @@ export default class P2PShare {
         audioHint.style.cssText =
             "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
 
-        wrap.append(label, hint, slider, auto, autoHint, audio, audioHint);
+        const devLabel = document.createElement("div");
+        devLabel.textContent = "Fonte do áudio";
+        devLabel.style.cssText = "margin-top:20px;margin-bottom:4px";
+
+        const devHint = document.createElement("div");
+        devHint.textContent =
+            "O Windows não deixa capturar o áudio de um app só. Para transmitir " +
+            "apenas o jogo, roteie ele para um cabo virtual (VB-Cable) no mixer " +
+            "de volume e escolha esse dispositivo aqui.";
+        devHint.style.cssText =
+            "font-size:12px;color:var(--text-muted,#72767d);margin-bottom:8px";
+
+        const select = document.createElement("select");
+        select.style.cssText =
+            "width:100%;padding:6px;background:var(--input-background,#1e1f22);" +
+            "color:inherit;border:1px solid var(--background-tertiary,#202225);border-radius:4px";
+
+        const saved = loadSetting<string | null>("audioDeviceId", null);
+        const addOption = (value: string, text: string) => {
+            const o = document.createElement("option");
+            o.value = value;
+            o.textContent = text;
+            o.selected = (value || null) === saved;
+            select.appendChild(o);
+        };
+
+        addOption("", "Áudio do sistema (inclui o Discord)");
+        select.addEventListener("change", () =>
+            saveSetting("audioDeviceId", select.value || null));
+
+        // enumerateDevices só revela os nomes depois de uma permissão de áudio;
+        // sem ela o navegador devolve rótulos vazios.
+        navigator.mediaDevices.enumerateDevices()
+            .then(devices => {
+                for (const d of devices) {
+                    if (d.kind !== "audioinput") continue;
+                    addOption(d.deviceId, d.label || `Entrada ${d.deviceId.slice(0, 8)}`);
+                }
+            })
+            .catch(err => console.warn("[P2PShare] não deu para listar dispositivos", err));
+
+        wrap.append(label, hint, slider, auto, autoHint, audio, audioHint,
+            devLabel, devHint, select);
         return wrap;
     }
 }

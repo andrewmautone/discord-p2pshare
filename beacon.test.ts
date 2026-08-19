@@ -34,6 +34,14 @@ describe("beaconContent", () => {
     it("inclui o link de instalação", () => {
         assert.match(beaconContent("abc12345", "Andrew"), /https?:\/\//);
     });
+
+    it("leva direto ao instalador, sem obrigar a cacar o download", () => {
+        assert.match(beaconContent("abc12345", "Andrew"), /P2PShare-Setup\.exe/);
+    });
+
+    it("fala tambem com quem ja tem o plugin", () => {
+        assert.match(beaconContent("abc12345", "Andrew"), /AO VIVO/);
+    });
 });
 
 describe("parseBeacon", () => {

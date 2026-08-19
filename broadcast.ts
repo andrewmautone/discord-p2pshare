@@ -7,7 +7,7 @@
 import { CaptureError, captureScreen } from "./capture";
 import { newSessionId } from "./codec";
 import { host } from "./host";
-import { BroadcastPeers, type PeerTransport } from "./peers";
+import { BroadcastPeers, type BroadcastQuality, type PeerTransport } from "./peers";
 import { observeSignals, postBeacon, removeBeacon, sendHandshake } from "./signaling";
 
 interface Session {
@@ -17,7 +17,19 @@ interface Session {
     stream: MediaStream;
     peers: BroadcastPeers;
     unsubscribe: () => void;
+    /** Cancela os vigias de saída de canal e de fechamento do Discord. */
+    unwatchExit: () => void;
 }
+
+/** Escolha do usuário, em termos que ele entende. */
+export interface QualityChoice {
+    /** Altura máxima em pixels; null mantém a resolução da captura. */
+    maxHeight: number | null;
+    /** Quadros por segundo; null deixa o navegador decidir. */
+    maxFramerate: number | null;
+}
+
+const DEFAULT_QUALITY: QualityChoice = { maxHeight: null, maxFramerate: null };
 
 export interface BroadcastState {
     active: boolean;
@@ -25,6 +37,7 @@ export interface BroadcastState {
 }
 
 let session: Session | null = null;
+let quality: QualityChoice = { ...DEFAULT_QUALITY };
 const listeners = new Set<(state: BroadcastState) => void>();
 
 /** Chave da prévia local, separada das sessões que estamos assistindo. */
@@ -55,6 +68,41 @@ export function getBroadcastState(): BroadcastState {
     return currentState();
 }
 
+export function getQuality(): QualityChoice {
+    return quality;
+}
+
+/**
+ * Traduz a escolha do usuário para o que o codificador entende e aplica.
+ *
+ * A conta da escala precisa da altura real da captura: pedir 720p a partir de
+ * uma tela 1440p é dividir por 2, mas a partir de 1080p é por 1,5.
+ */
+export function setQuality(choice: QualityChoice): void {
+    quality = choice;
+    if (!session) return;
+
+    const track = session.stream.getVideoTracks()[0];
+    const sourceHeight = track?.getSettings().height;
+
+    const encoding: BroadcastQuality = {
+        maxFramerate: choice.maxFramerate ?? undefined,
+        scaleResolutionDownBy:
+            choice.maxHeight && sourceHeight && sourceHeight > choice.maxHeight
+                ? sourceHeight / choice.maxHeight
+                : 1
+    };
+
+    session.peers.setQuality(encoding);
+
+    // Também pede à captura: baixar o fps na origem poupa CPU de quem
+    // transmite, coisa que mexer só no codificador não faz.
+    if (track && choice.maxFramerate) {
+        track.applyConstraints({ frameRate: { max: choice.maxFramerate } })
+            .catch(err => console.warn("[P2PShare] a captura recusou o fps pedido", err));
+    }
+}
+
 export async function startBroadcast(): Promise<void> {
     if (session) {
         host.toast("Você já está transmitindo", "info");
@@ -71,7 +119,10 @@ export async function startBroadcast(): Promise<void> {
     try {
         stream = await captureScreen(
             { pickSource: host.pickSource },
-            { audio: host.shouldCaptureAudio() }
+            {
+                audio: host.shouldCaptureAudio(),
+                audioDeviceId: host.getAudioDeviceId()
+            }
         );
     } catch (err) {
         host.toast(
@@ -104,6 +155,26 @@ export async function startBroadcast(): Promise<void> {
     // Se o usuário parar a captura pelo diálogo nativo do Chromium, encerra tudo.
     stream.getVideoTracks()[0]?.addEventListener("ended", () => { void stopBroadcast(); });
 
+    // Sair da voz, trocar de canal ou fechar o Discord tem que cortar na hora:
+    // uma transmissão viva sem ninguém do outro lado é banda gasta à toa, e o
+    // aviso ficaria no chat convidando gente para uma tela que não existe mais.
+    const onVoiceChange = host.onVoiceChannelChange(id => {
+        if (id !== channelId) void stopBroadcast();
+    });
+
+    const onUnload = () => {
+        // beforeunload não espera promessa: fechar os peers é o que dá para
+        // garantir, e é o que corta o vídeo de quem assiste na hora.
+        session?.peers.closeAll();
+        void stopBroadcast();
+    };
+    window.addEventListener("beforeunload", onUnload);
+
+    const unwatchExit = () => {
+        onVoiceChange();
+        window.removeEventListener("beforeunload", onUnload);
+    };
+
     const unsubscribe = observeSignals({
         onHandshake: event => {
             if (event.sessionId !== sessionId || event.kind !== "offer") return;
@@ -118,13 +189,17 @@ export async function startBroadcast(): Promise<void> {
         beaconId = await postBeacon(channelId, sessionId, host.getCurrentUsername());
     } catch (err) {
         // Sem beacon ninguém descobre a transmissão: desfaz tudo.
+        unwatchExit();
         unsubscribe();
         stream.getTracks().forEach(track => track.stop());
         host.toast(`não deu para anunciar a transmissão: ${(err as Error).message}`, "error");
         return;
     }
 
-    session = { sessionId, channelId, beaconId, stream, peers, unsubscribe };
+    session = { sessionId, channelId, beaconId, stream, peers, unsubscribe, unwatchExit };
+    // Reaplica a escolha anterior: quem baixou para 720p não quer voltar
+    // para 1440p só porque reiniciou a transmissão.
+    setQuality(quality);
 
     // Prévia da própria tela. Muda de propósito: o áudio capturado é o do
     // sistema, e reproduzi-lo de volta nos alto-falantes microfonaria.
@@ -134,7 +209,11 @@ export async function startBroadcast(): Promise<void> {
         stream,
         "Sua tela",
         () => host.unmountOverlay(selfPreviewKey(sessionId)),
-        { muted: true, closeLabel: "Fechar a prévia (não encerra a transmissão)" }
+        {
+            muted: true,
+            closable: false,
+            userId: host.getCurrentUserId()
+        }
     );
 
     notify();
@@ -149,6 +228,7 @@ export async function stopBroadcast(): Promise<void> {
     session = null;
 
     host.unmountOverlay(selfPreviewKey(current.sessionId));
+    current.unwatchExit();
     current.unsubscribe();
     current.peers.closeAll();
     current.stream.getTracks().forEach(track => track.stop());

@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.2.1
+ * @version 1.6.1
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -52,7 +52,8 @@ var defaultDeps = {
     });
   },
   // Sem seletor injetado, transmite a primeira fonte (a tela principal).
-  pickSource: async (sources) => sources[0]?.id ?? null
+  pickSource: async (sources) => sources[0]?.id ?? null,
+  combine: (tracks) => new MediaStream(tracks)
 };
 async function captureScreen(deps = {}, opts = {}) {
   const d = { ...defaultDeps, ...deps };
@@ -73,6 +74,21 @@ async function captureScreen(deps = {}, opts = {}) {
         maxFrameRate: 60
       }
     };
+    if (wantAudio && opts.audioDeviceId) {
+      const videoOnly = await d.getUserMedia({ audio: false, video }).catch((err) => {
+        throw new CaptureError(`falha ao capturar a fonte: ${err.message}`);
+      });
+      try {
+        const mic = await d.getUserMedia({
+          audio: { deviceId: { exact: opts.audioDeviceId } },
+          video: false
+        });
+        return d.combine([...videoOnly.getTracks(), ...mic.getTracks()]);
+      } catch (err) {
+        console.warn("[P2PShare] dispositivo de \xE1udio indispon\xEDvel", err);
+        return videoOnly;
+      }
+    }
     if (wantAudio) {
       try {
         return await d.getUserMedia({
@@ -103,8 +119,8 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_URL = "https://github.com/andrewmautone/discord-p2pshare";
-var PLUGIN_VERSION = "1.2.1";
+var PLUGIN_VERSION = "1.6.1";
+var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var UPDATE_URL = "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
 var ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -322,6 +338,17 @@ function onMessageCreate(handler) {
   FluxDispatcher().subscribe("MESSAGE_CREATE", listener);
   return () => FluxDispatcher().unsubscribe("MESSAGE_CREATE", listener);
 }
+function onVoiceChannelChange(handler) {
+  const listener = (event) => {
+    try {
+      handler(event.channelId ?? null);
+    } catch (err) {
+      console.error("[P2PShare] handler de VOICE_CHANNEL_SELECT falhou", err);
+    }
+  };
+  FluxDispatcher().subscribe("VOICE_CHANNEL_SELECT", listener);
+  return () => FluxDispatcher().unsubscribe("VOICE_CHANNEL_SELECT", listener);
+}
 function onMessageDelete(handler) {
   const listener = (event) => {
     try {
@@ -348,11 +375,14 @@ function saveSetting(key, value) {
 var ui_exports = {};
 __export(ui_exports, {
   announceBeacon: () => announceBeacon,
+  closeBroadcastMenu: () => closeBroadcastMenu,
   dumpVoiceDiagnostics: () => dumpVoiceDiagnostics,
+  focusChannel: () => focusChannel,
   injectStyles: () => injectStyles,
   mountLauncher: () => mountLauncher,
   mountOverlay: () => mountOverlay,
   mountVoiceButton: () => mountVoiceButton,
+  openBroadcastMenu: () => openBroadcastMenu,
   openSourcePicker: () => openSourcePicker,
   removeStyles: () => removeStyles,
   revokeBeacon: () => revokeBeacon,
@@ -575,9 +605,152 @@ var CSS = `
     pointer-events: none;
 }
 .p2ps-launcher-hidden { display: none; }
+.p2ps-menu {
+    position: fixed;
+    z-index: 4200;
+    min-width: 220px;
+    padding: 6px;
+    border-radius: 8px;
+    background: var(--background-floating, #18191c);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+    color: var(--header-primary, #fff);
+    font-size: 14px;
+}
+.p2ps-menu-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 9px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.p2ps-menu-item:hover { background: var(--brand-experiment, #5865f2); }
+.p2ps-menu-value { color: var(--text-muted, #b5bac1); font-size: 13px; }
+.p2ps-menu-item:hover .p2ps-menu-value { color: #fff; }
+.p2ps-menu-check { width: 12px; text-align: right; }
+.p2ps-menu-sep {
+    height: 1px;
+    margin: 5px 4px;
+    background: var(--background-modifier-accent, #3f4147);
+}
+.p2ps-menu-danger { color: var(--status-danger, #ed4245); }
+.p2ps-menu-danger:hover { background: var(--status-danger, #ed4245); color: #fff; }
+.p2ps-submenu {
+    display: none;
+    position: absolute;
+    left: 100%;
+    top: -6px;
+    margin-left: 4px;
+    min-width: 150px;
+    padding: 6px;
+    border-radius: 8px;
+    background: var(--background-floating, #18191c);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+}
+.p2ps-menu-parent:hover > .p2ps-submenu { display: block; }
+
+.p2ps-clickable { cursor: pointer; }
+.p2ps-clickable:hover { filter: brightness(1.15); }
+.p2ps-tile-video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+    z-index: 1;
+    border-radius: inherit;
+}
+.p2ps-tile-bar {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    z-index: 3;
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    background: rgb(0 0 0 / 65%);
+    opacity: 0;
+    transition: opacity .15s;
+}
+[class*="tileChild"]:hover .p2ps-tile-bar { opacity: 1; }
+.p2ps-tile-bar button {
+    background: none;
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 2px 4px;
+}
+.p2ps-tile-bar button:hover { color: var(--brand-experiment, #5865f2); }
+.p2ps-tile-vol { width: 60px; accent-color: var(--brand-experiment, #5865f2); }
+@media (prefers-reduced-motion: reduce) {
+    .p2ps-tile-bar { transition: none; }
+}
+.p2ps-tile-cta {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 3;
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    background: var(--status-danger, #ed4245);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgb(0 0 0 / 45%);
+    transition: transform .12s, filter .12s;
+    white-space: nowrap;
+}
+.p2ps-tile-cta:hover { filter: brightness(1.12); transform: translate(-50%, -50%) scale(1.04); }
+.p2ps-cta-play { font-size: 12px; }
+@media (prefers-reduced-motion: reduce) {
+    .p2ps-tile-cta { transition: none; }
+    .p2ps-tile-cta:hover { transform: translate(-50%, -50%); }
+}
+.p2ps-tile-live {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 2;
+    /* O overlay do Discord desliga eventos; o selo precisa reativar. */
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+    background: var(--status-danger, #ed4245);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgb(0 0 0 / 35%);
+}
+.p2ps-tile-live:hover:not(:disabled) { filter: brightness(1.15); }
+.p2ps-tile-live:disabled { cursor: default; opacity: .9; }
 .p2ps-live-chip {
     display: inline-flex;
     align-items: center;
+    align-self: center;
+    flex: 0 0 auto;
+    vertical-align: middle;
     margin-left: 6px;
     padding: 0 5px;
     border-radius: 4px;
@@ -603,6 +776,7 @@ function injectStyles() {
   BdApi.DOM.addStyle("P2PShare", CSS);
 }
 function removeStyles() {
+  closeBroadcastMenu();
   BdApi.DOM.removeStyle("P2PShare");
 }
 function makeDraggable(el, handle, onDrop) {
@@ -649,7 +823,7 @@ function mountLauncher(opts) {
     if (e.buttons) moved = true;
   });
   el.addEventListener("click", () => {
-    if (!moved) opts.onToggle();
+    if (!moved) opts.onToggle(el);
   });
   makeDraggable(el, el, () => {
     opts.onMoved({ x: parseInt(el.style.left, 10), y: parseInt(el.style.top, 10) });
@@ -769,7 +943,7 @@ function mountVoiceButton(opts) {
       btn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        opts.onToggle();
+        opts.onToggle(btn);
       });
       site.place(btn);
       paintOne(btn);
@@ -777,6 +951,8 @@ function mountVoiceButton(opts) {
     }
     opts.onAnchorChange([...voiceBtns.values()].some(isVisible));
     applyLiveBadges();
+    applyTileBadges();
+    applyTileVideos();
     dumpVoiceDiagnostics();
   };
   sync();
@@ -847,17 +1023,189 @@ function applyLiveBadges() {
       continue;
     }
     if (existing) continue;
+    const user = liveUsers.find((u) => id && u.id === id || !!text && u.names.includes(text));
     const chip = document.createElement("span");
     chip.className = "p2ps-live-chip";
     chip.textContent = "AO VIVO";
-    chip.title = "Transmitindo via P2PShare";
-    const slot = row.querySelector('[class*="chipletParent"]') ?? nameEl?.parentElement;
+    if (user?.onWatch) {
+      chip.classList.add("p2ps-clickable");
+      chip.title = "Clique para assistir";
+      chip.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        user.onWatch();
+      });
+    } else {
+      chip.title = "Transmitindo via P2PShare";
+    }
+    const slot = row.querySelector('[class*="usernameContainer"]') ?? row.querySelector('[class*="chipletParent"]') ?? nameEl?.parentElement;
     slot?.appendChild(chip);
   }
+}
+function applyTileBadges() {
+  for (const tile of document.querySelectorAll("[data-selenium-video-tile]")) {
+    const id = tile.getAttribute("data-selenium-video-tile");
+    const user = liveUsers.find((u) => u.id === id);
+    const existing = tile.querySelector(".p2ps-tile-live");
+    if (!user) {
+      existing?.remove();
+      tile.querySelector(".p2ps-tile-cta")?.remove();
+      continue;
+    }
+    if (!user.onWatch) tile.querySelector(".p2ps-tile-cta")?.remove();
+    if (existing) continue;
+    const badge = document.createElement("span");
+    badge.className = "p2ps-tile-live";
+    badge.textContent = "AO VIVO";
+    badge.title = user.onWatch ? "Transmitindo via P2PShare" : "Voc\xEA est\xE1 transmitindo via P2PShare";
+    const slot = tile.querySelector('[class*="overlayTop"]') ?? tile.querySelector('[class*="tileChild"]') ?? tile;
+    slot.appendChild(badge);
+    if (!user.onWatch) continue;
+    const child = tile.querySelector('[class*="tileChild"]') ?? tile;
+    if (child.querySelector(".p2ps-tile-cta")) continue;
+    const cta = document.createElement("button");
+    cta.type = "button";
+    cta.className = "p2ps-tile-cta";
+    cta.innerHTML = '<span class="p2ps-cta-play">\u25B6</span> Assistir transmiss\xE3o';
+    cta.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      user.onWatch();
+    });
+    child.appendChild(cta);
+  }
+}
+function focusChannel(channelId) {
+  const safe = channelId.replace(/[^\w-]/g, "");
+  if (!safe) return;
+  const link = document.querySelector(
+    `[data-list-item-id="channels___${safe}"]`
+  );
+  link?.click();
 }
 function setLiveUsers(users) {
   liveUsers = users;
   applyLiveBadges();
+  applyTileBadges();
+}
+var RESOLUTIONS = [
+  { label: "Original", value: null },
+  { label: "1440p", value: 1440 },
+  { label: "1080p", value: 1080 },
+  { label: "720p", value: 720 },
+  { label: "480p", value: 480 }
+];
+var FRAMERATES = [
+  { label: "M\xE1ximo", value: null },
+  { label: "60 fps", value: 60 },
+  { label: "30 fps", value: 30 },
+  { label: "15 fps", value: 15 }
+];
+var openMenu = null;
+function closeBroadcastMenu() {
+  openMenu?.remove();
+  openMenu = null;
+}
+function openBroadcastMenu(anchor, opts) {
+  closeBroadcastMenu();
+  const menu = document.createElement("div");
+  menu.className = "p2ps-menu";
+  const current = { ...opts.quality };
+  const addSubmenu = (title, options, selected, apply) => {
+    const item = document.createElement("div");
+    item.className = "p2ps-menu-item p2ps-menu-parent";
+    const label = document.createElement("span");
+    label.textContent = title;
+    const value = document.createElement("span");
+    value.className = "p2ps-menu-value";
+    const paintValue = () => {
+      value.textContent = (options.find((o) => o.value === selected())?.label ?? "\u2014") + "  \u203A";
+    };
+    paintValue();
+    item.append(label, value);
+    const sub = document.createElement("div");
+    sub.className = "p2ps-submenu";
+    for (const option of options) {
+      const row = document.createElement("div");
+      row.className = "p2ps-menu-item";
+      row.textContent = option.label;
+      const check = document.createElement("span");
+      check.className = "p2ps-menu-check";
+      check.textContent = option.value === selected() ? "\u2713" : "";
+      row.appendChild(check);
+      row.addEventListener("click", (e) => {
+        e.stopPropagation();
+        apply(option.value);
+        paintValue();
+        for (const other of sub.querySelectorAll(".p2ps-menu-check")) {
+          other.textContent = "";
+        }
+        check.textContent = "\u2713";
+        opts.onQuality(current);
+      });
+      sub.appendChild(row);
+    }
+    item.appendChild(sub);
+    menu.appendChild(item);
+  };
+  addSubmenu(
+    "Resolu\xE7\xE3o",
+    RESOLUTIONS,
+    () => current.maxHeight,
+    (v) => {
+      current.maxHeight = v;
+    }
+  );
+  addSubmenu(
+    "Taxa de quadros",
+    FRAMERATES,
+    () => current.maxFramerate,
+    (v) => {
+      current.maxFramerate = v;
+    }
+  );
+  const sep = document.createElement("div");
+  sep.className = "p2ps-menu-sep";
+  menu.appendChild(sep);
+  const stop = document.createElement("div");
+  stop.className = "p2ps-menu-item p2ps-menu-danger";
+  stop.textContent = "Parar de transmitir";
+  stop.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeBroadcastMenu();
+    opts.onStop();
+  });
+  menu.appendChild(stop);
+  document.body.appendChild(menu);
+  openMenu = menu;
+  const rect = anchor.getBoundingClientRect();
+  const box = menu.getBoundingClientRect();
+  const left = Math.min(
+    Math.max(8, rect.left + rect.width / 2 - box.width / 2),
+    window.innerWidth - box.width - 8
+  );
+  menu.style.left = `${left}px`;
+  menu.style.top = `${Math.max(8, rect.top - box.height - 8)}px`;
+  const onOutside = (e) => {
+    if (!menu.contains(e.target)) {
+      closeBroadcastMenu();
+      cleanup();
+    }
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") {
+      closeBroadcastMenu();
+      cleanup();
+    }
+  };
+  const cleanup = () => {
+    document.removeEventListener("mousedown", onOutside, true);
+    document.removeEventListener("keydown", onKey, true);
+  };
+  setTimeout(() => {
+    document.addEventListener("mousedown", onOutside, true);
+    document.addEventListener("keydown", onKey, true);
+  }, 0);
 }
 function thumbnailOf(source) {
   const raw = source;
@@ -964,8 +1312,115 @@ function openSourcePicker(sources) {
   });
 }
 var overlays = /* @__PURE__ */ new Map();
-function mountOverlay(sessionId, stream, title, onClose, opts = {}) {
-  unmountOverlay(sessionId);
+var tileSessions = /* @__PURE__ */ new Map();
+var poppedOut = /* @__PURE__ */ new Map();
+function tilesOf(userId) {
+  const safe = userId.replace(/[^\w-]/g, "");
+  if (!safe) return [];
+  return [...document.querySelectorAll(
+    `[data-selenium-video-tile="${safe}"]`
+  )];
+}
+function buildTileBar(sessionId, session2) {
+  const bar = document.createElement("div");
+  bar.className = "p2ps-tile-bar";
+  const mkBtn = (text, title, onClick) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    b.title = title;
+    b.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onClick();
+    });
+    return b;
+  };
+  if (!session2.muted) {
+    const vol = document.createElement("input");
+    vol.type = "range";
+    vol.min = "0";
+    vol.max = "100";
+    vol.value = String(Math.round(session2.volume * 100));
+    vol.className = "p2ps-tile-vol";
+    vol.title = "Volume";
+    vol.addEventListener("mousedown", (e) => e.stopPropagation());
+    vol.addEventListener("click", (e) => e.stopPropagation());
+    vol.addEventListener("input", () => {
+      session2.volume = Number(vol.value) / 100;
+      if (session2.audio) session2.audio.volume = session2.volume;
+    });
+    bar.appendChild(vol);
+  }
+  bar.appendChild(mkBtn("\u26F6", "Tela cheia", () => {
+    const video = bar.parentElement?.querySelector("video");
+    void video?.requestFullscreen();
+  }));
+  bar.appendChild(mkBtn("\u29C9", "Abrir em janela solta", () => popOut(sessionId)));
+  if (session2.closable) {
+    bar.appendChild(mkBtn("\u2715", `Parar de assistir ${session2.title}`, session2.onClose));
+  }
+  return bar;
+}
+function applyTileVideos() {
+  const claimed = /* @__PURE__ */ new Set();
+  for (const [sessionId, session2] of tileSessions) {
+    for (const tile of tilesOf(session2.userId)) {
+      const child = tile.querySelector('[class*="tileChild"]') ?? tile;
+      claimed.add(child);
+      if (child.querySelector(".p2ps-tile-video")) continue;
+      const video = document.createElement("video");
+      video.className = "p2ps-tile-video";
+      video.autoplay = true;
+      video.playsInline = true;
+      video.muted = true;
+      video.srcObject = session2.stream;
+      child.appendChild(video);
+      child.appendChild(buildTileBar(sessionId, session2));
+    }
+  }
+  for (const el of document.querySelectorAll(".p2ps-tile-video")) {
+    const child = el.parentElement;
+    if (child && !claimed.has(child)) {
+      el.remove();
+      child.querySelector(".p2ps-tile-bar")?.remove();
+    }
+  }
+}
+function popOut(sessionId) {
+  const session2 = tileSessions.get(sessionId);
+  if (!session2) return;
+  detachFromTiles(sessionId, { keepAudio: true });
+  poppedOut.set(sessionId, session2);
+  mountFloatingOverlay(sessionId, session2.stream, session2.title, session2.onClose, {
+    muted: session2.muted,
+    onDock: () => dockBack(sessionId)
+  });
+}
+function dockBack(sessionId) {
+  const session2 = poppedOut.get(sessionId);
+  if (!session2) return;
+  poppedOut.delete(sessionId);
+  unmountFloatingOverlay(sessionId);
+  tileSessions.set(sessionId, session2);
+  applyTileVideos();
+}
+function detachFromTiles(sessionId, opts = {}) {
+  const session2 = tileSessions.get(sessionId);
+  if (!session2) return;
+  tileSessions.delete(sessionId);
+  for (const tile of tilesOf(session2.userId)) {
+    tile.querySelector(".p2ps-tile-video")?.remove();
+    tile.querySelector(".p2ps-tile-bar")?.remove();
+  }
+  if (!opts.keepAudio) {
+    session2.audio?.pause();
+    session2.audio?.remove();
+    session2.audio = null;
+  }
+}
+function mountFloatingOverlay(sessionId, stream, title, onClose, opts = {}) {
+  unmountFloatingOverlay(sessionId);
   const el = document.createElement("div");
   el.className = "p2ps-overlay";
   el.style.left = "80px";
@@ -1011,8 +1466,19 @@ function mountOverlay(sessionId, stream, title, onClose, opts = {}) {
     void video.requestFullscreen();
   });
   const closeBtn = el.querySelector('[data-act="close"]');
-  closeBtn.title = opts.closeLabel ?? "Fechar";
-  closeBtn.addEventListener("click", onClose);
+  if (opts.onDock) {
+    closeBtn.title = "Voltar para o quadro";
+    closeBtn.addEventListener("click", opts.onDock);
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.textContent = "\u23F9";
+    stop.title = `Parar de assistir ${title}`;
+    stop.addEventListener("click", onClose);
+    closeBtn.insertAdjacentElement("beforebegin", stop);
+  } else {
+    closeBtn.title = opts.closeLabel ?? "Fechar";
+    closeBtn.addEventListener("click", onClose);
+  }
   makeDraggable(el, el.querySelector(".p2ps-overlay-bar"));
   document.body.appendChild(el);
   overlays.set(sessionId, el);
@@ -1040,7 +1506,45 @@ function setOverlayViewers(sessionId, names) {
     bar.appendChild(chip);
   }
 }
+function mountOverlay(sessionId, stream, title, onClose, opts = {}) {
+  unmountOverlay(sessionId);
+  if (opts.userId && tilesOf(opts.userId).length) {
+    const session2 = {
+      userId: opts.userId,
+      stream,
+      title,
+      muted: opts.muted === true,
+      closable: opts.closable !== false,
+      onClose,
+      audio: null,
+      volume: 1
+    };
+    if (!session2.muted) {
+      const audio = document.createElement("audio");
+      audio.autoplay = true;
+      audio.srcObject = stream;
+      audio.style.display = "none";
+      document.body.appendChild(audio);
+      session2.audio = audio;
+    }
+    tileSessions.set(sessionId, session2);
+    applyTileVideos();
+    return;
+  }
+  mountFloatingOverlay(sessionId, stream, title, onClose, opts);
+}
+function unmountFloatingOverlay(sessionId) {
+  const el = overlays.get(sessionId);
+  if (!el) return;
+  el.__p2psCleanupDrag?.();
+  const video = el.querySelector("video");
+  if (video) video.srcObject = null;
+  el.remove();
+  overlays.delete(sessionId);
+}
 function unmountOverlay(sessionId) {
+  detachFromTiles(sessionId);
+  poppedOut.delete(sessionId);
   const el = overlays.get(sessionId);
   if (!el) return;
   el.__p2psCleanupDrag?.();
@@ -1050,6 +1554,8 @@ function unmountOverlay(sessionId) {
   overlays.delete(sessionId);
 }
 function unmountAllOverlays() {
+  for (const sessionId of [...tileSessions.keys()]) unmountOverlay(sessionId);
+  for (const sessionId of [...poppedOut.keys()]) unmountOverlay(sessionId);
   for (const sessionId of [...overlays.keys()]) unmountOverlay(sessionId);
 }
 var notices = /* @__PURE__ */ new Map();
@@ -1098,9 +1604,11 @@ var host = {
   openDm,
   onMessageCreate,
   onMessageDelete,
+  onVoiceChannelChange,
   toast: (message, kind) => BdApi.UI.showToast(message, { type: TOAST_TYPE[kind] }),
   getBudgetMbps: () => loadSetting("uploadBudgetMbps", DEFAULT_BUDGET_MBPS),
   shouldCaptureAudio: () => loadSetting("captureAudio", true),
+  getAudioDeviceId: () => loadSetting("audioDeviceId", null),
   pickSource: openSourcePicker,
   mountOverlay,
   unmountOverlay,
@@ -1148,6 +1656,7 @@ var BroadcastPeers = class {
   createPeer;
   budgetMbps;
   onCountChange;
+  quality = {};
   get viewerCount() {
     return this.peers.size;
   }
@@ -1174,6 +1683,11 @@ var BroadcastPeers = class {
     this.applyBitrate();
     this.onCountChange?.(this.peers.size);
     await this.transport.send("answer", fromUserId, pc.localDescription?.sdp ?? answer.sdp);
+  }
+  /** Troca a qualidade em transmissao, sem recapturar a tela. */
+  setQuality(quality2) {
+    this.quality = quality2;
+    this.applyBitrate();
   }
   removePeer(userId) {
     const pc = this.peers.get(userId);
@@ -1202,6 +1716,8 @@ var BroadcastPeers = class {
         if (!params.encodings?.length) params.encodings = [{}];
         params.encodings[0].maxBitrate = maxBitrate;
         params.degradationPreference = "maintain-framerate";
+        params.encodings[0].maxFramerate = this.quality.maxFramerate;
+        params.encodings[0].scaleResolutionDownBy = this.quality.scaleResolutionDownBy ?? 1;
         sender.setParameters(params).catch((err) => console.warn("[P2PShare] n\xE3o deu para aplicar o bitrate", err));
       }
     }
@@ -1234,6 +1750,9 @@ var ViewerPeer = class {
     };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "connected") this.clearTimer();
+      if (pc.connectionState === "closed" || pc.connectionState === "disconnected") {
+        this.fail("a transmiss\xE3o foi encerrada");
+      }
       if (pc.connectionState === "failed") {
         this.fail(
           "a conex\xE3o P2P falhou \u2014 prov\xE1vel NAT sim\xE9trico (CGNAT). Sem TURN n\xE3o tem como conectar"
@@ -1277,8 +1796,10 @@ var ViewerPeer = class {
 
 // beacon.ts
 function beaconContent(sessionId, username) {
-  const visible = `\u{1F534} **${username}** est\xE1 transmitindo a tela via P2P.
-Instale o plugin para assistir: ${PLUGIN_URL}`;
+  const visible = `# \u{1F534} ${username} est\xE1 transmitindo a tela
+**J\xE1 tem o P2PShare?** Clique em **AO VIVO** no quadro dele na chamada e a tela abre por cima do avatar.
+**Ainda n\xE3o tem?** [Baixar o instalador](${DOWNLOAD_URL})
+-# V\xEDdeo ponto-a-ponto, direto entre os computadores. N\xE3o passa por servidor nenhum.`;
   return embedPayload(visible, { v: PROTOCOL_VERSION, s: sessionId });
 }
 function parseBeacon(message) {
@@ -1395,7 +1916,9 @@ function observeSignals(handlers) {
 }
 
 // broadcast.ts
+var DEFAULT_QUALITY = { maxHeight: null, maxFramerate: null };
 var session = null;
+var quality = { ...DEFAULT_QUALITY };
 var listeners = /* @__PURE__ */ new Set();
 function selfPreviewKey(sessionId) {
   return `self:${sessionId}`;
@@ -1418,6 +1941,23 @@ function isBroadcasting() {
 function getBroadcastState() {
   return currentState();
 }
+function getQuality() {
+  return quality;
+}
+function setQuality(choice) {
+  quality = choice;
+  if (!session) return;
+  const track = session.stream.getVideoTracks()[0];
+  const sourceHeight = track?.getSettings().height;
+  const encoding = {
+    maxFramerate: choice.maxFramerate ?? void 0,
+    scaleResolutionDownBy: choice.maxHeight && sourceHeight && sourceHeight > choice.maxHeight ? sourceHeight / choice.maxHeight : 1
+  };
+  session.peers.setQuality(encoding);
+  if (track && choice.maxFramerate) {
+    track.applyConstraints({ frameRate: { max: choice.maxFramerate } }).catch((err) => console.warn("[P2PShare] a captura recusou o fps pedido", err));
+  }
+}
 async function startBroadcast() {
   if (session) {
     host.toast("Voc\xEA j\xE1 est\xE1 transmitindo", "info");
@@ -1432,7 +1972,10 @@ async function startBroadcast() {
   try {
     stream = await captureScreen(
       { pickSource: host.pickSource },
-      { audio: host.shouldCaptureAudio() }
+      {
+        audio: host.shouldCaptureAudio(),
+        audioDeviceId: host.getAudioDeviceId()
+      }
     );
   } catch (err) {
     host.toast(
@@ -1458,6 +2001,18 @@ async function startBroadcast() {
   stream.getVideoTracks()[0]?.addEventListener("ended", () => {
     void stopBroadcast();
   });
+  const onVoiceChange = host.onVoiceChannelChange((id) => {
+    if (id !== channelId) void stopBroadcast();
+  });
+  const onUnload = () => {
+    session?.peers.closeAll();
+    void stopBroadcast();
+  };
+  window.addEventListener("beforeunload", onUnload);
+  const unwatchExit = () => {
+    onVoiceChange();
+    window.removeEventListener("beforeunload", onUnload);
+  };
   const unsubscribe = observeSignals({
     onHandshake: (event) => {
       if (event.sessionId !== sessionId || event.kind !== "offer") return;
@@ -1468,18 +2023,24 @@ async function startBroadcast() {
   try {
     beaconId = await postBeacon(channelId, sessionId, host.getCurrentUsername());
   } catch (err) {
+    unwatchExit();
     unsubscribe();
     stream.getTracks().forEach((track) => track.stop());
     host.toast(`n\xE3o deu para anunciar a transmiss\xE3o: ${err.message}`, "error");
     return;
   }
-  session = { sessionId, channelId, beaconId, stream, peers, unsubscribe };
+  session = { sessionId, channelId, beaconId, stream, peers, unsubscribe, unwatchExit };
+  setQuality(quality);
   host.mountOverlay(
     selfPreviewKey(sessionId),
     stream,
     "Sua tela",
     () => host.unmountOverlay(selfPreviewKey(sessionId)),
-    { muted: true, closeLabel: "Fechar a pr\xE9via (n\xE3o encerra a transmiss\xE3o)" }
+    {
+      muted: true,
+      closable: false,
+      userId: host.getCurrentUserId()
+    }
   );
   notify();
   host.toast("Transmitindo via P2P", "success");
@@ -1489,6 +2050,7 @@ async function stopBroadcast() {
   if (!current) return;
   session = null;
   host.unmountOverlay(selfPreviewKey(current.sessionId));
+  current.unwatchExit();
   current.unsubscribe();
   current.peers.closeAll();
   current.stream.getTracks().forEach((track) => track.stop());
@@ -1546,6 +2108,9 @@ function onBeaconsChange(listener) {
   beaconListeners.add(listener);
   return () => beaconListeners.delete(listener);
 }
+function isWatching(sessionId) {
+  return watching.has(sessionId);
+}
 function watchingCount() {
   return watching.size;
 }
@@ -1562,7 +2127,10 @@ async function startWatching(beacon) {
       stream,
       beacon.broadcasterName,
       () => stopWatching(beacon.sessionId),
-      { closeLabel: `Parar de assistir ${beacon.broadcasterName}` }
+      {
+        closeLabel: `Parar de assistir ${beacon.broadcasterName}`,
+        userId: beacon.broadcasterId
+      }
     );
   };
   peer.onFailed = (reason) => {
@@ -1737,9 +2305,18 @@ var P2PShare = class {
   cleanupBeacons = null;
   start() {
     ui_exports.injectStyles();
-    const toggle = () => {
-      if (getBroadcastState().active) void stopBroadcast();
-      else void startBroadcast();
+    const toggle = (anchor) => {
+      if (!getBroadcastState().active) {
+        void startBroadcast();
+        return;
+      }
+      ui_exports.openBroadcastMenu(anchor, {
+        quality: getQuality(),
+        onQuality: (q) => setQuality(q),
+        onStop: () => {
+          void stopBroadcast();
+        }
+      });
     };
     this.cleanupWatcher = initWatcher();
     ui_exports.mountLauncher({
@@ -1766,7 +2343,12 @@ var P2PShare = class {
       for (const b of getActiveBeacons()) {
         users.push({
           id: b.broadcasterId,
-          names: [getUsername(b.broadcasterId), b.broadcasterName]
+          names: [getUsername(b.broadcasterId), b.broadcasterName],
+          // Já assistindo: o selo vira informativo, sem ação repetida.
+          onWatch: isWatching(b.sessionId) ? void 0 : () => {
+            ui_exports.focusChannel(b.channelId);
+            void startWatching(b);
+          }
         });
       }
       ui_exports.setLiveUsers(users);
@@ -1841,7 +2423,42 @@ var P2PShare = class {
     const audioHint = document.createElement("div");
     audioHint.textContent = "O Windows s\xF3 permite capturar o \xE1udio inteiro da m\xE1quina, e isso inclui o pr\xF3prio Discord \u2014 quem assiste ouve a chamada de volta. Desligue se isso incomodar.";
     audioHint.style.cssText = "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
-    wrap.append(label, hint, slider, auto, autoHint, audio, audioHint);
+    const devLabel = document.createElement("div");
+    devLabel.textContent = "Fonte do \xE1udio";
+    devLabel.style.cssText = "margin-top:20px;margin-bottom:4px";
+    const devHint = document.createElement("div");
+    devHint.textContent = "O Windows n\xE3o deixa capturar o \xE1udio de um app s\xF3. Para transmitir apenas o jogo, roteie ele para um cabo virtual (VB-Cable) no mixer de volume e escolha esse dispositivo aqui.";
+    devHint.style.cssText = "font-size:12px;color:var(--text-muted,#72767d);margin-bottom:8px";
+    const select = document.createElement("select");
+    select.style.cssText = "width:100%;padding:6px;background:var(--input-background,#1e1f22);color:inherit;border:1px solid var(--background-tertiary,#202225);border-radius:4px";
+    const saved = loadSetting("audioDeviceId", null);
+    const addOption = (value, text) => {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = text;
+      o.selected = (value || null) === saved;
+      select.appendChild(o);
+    };
+    addOption("", "\xC1udio do sistema (inclui o Discord)");
+    select.addEventListener("change", () => saveSetting("audioDeviceId", select.value || null));
+    navigator.mediaDevices.enumerateDevices().then((devices) => {
+      for (const d of devices) {
+        if (d.kind !== "audioinput") continue;
+        addOption(d.deviceId, d.label || `Entrada ${d.deviceId.slice(0, 8)}`);
+      }
+    }).catch((err) => console.warn("[P2PShare] n\xE3o deu para listar dispositivos", err));
+    wrap.append(
+      label,
+      hint,
+      slider,
+      auto,
+      autoHint,
+      audio,
+      audioHint,
+      devLabel,
+      devHint,
+      select
+    );
     return wrap;
   }
 };

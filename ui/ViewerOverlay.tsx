@@ -124,7 +124,9 @@ export function mountOverlay(
     stream: MediaStream,
     title: string,
     onClose: () => void,
-    opts: { muted?: boolean; closeLabel?: string; } = {}
+    // userId só serve ao BetterDiscord, que pinta o vídeo no quadro da
+    // pessoa; aqui a janela flutuante é o único formato.
+    opts: { muted?: boolean; closeLabel?: string; userId?: string; closable?: boolean; } = {}
 ): void {
     unmountOverlay(sessionId);
 

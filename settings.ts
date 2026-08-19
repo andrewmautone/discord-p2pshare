@@ -26,6 +26,11 @@ export const settings = definePluginSettings({
         description: "Transmitir o áudio do sistema (inclui o áudio do próprio Discord)",
         default: true
     },
+    audioDeviceId: {
+        type: OptionType.STRING,
+        description: "Id do dispositivo de áudio a capturar (vazio = áudio do sistema)",
+        default: ""
+    },
     overlayX: { type: OptionType.NUMBER, description: "", default: 80, hidden: true },
     overlayY: { type: OptionType.NUMBER, description: "", default: 80, hidden: true },
     overlayWidth: { type: OptionType.NUMBER, description: "", default: 640, hidden: true }

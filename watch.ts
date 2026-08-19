@@ -55,7 +55,10 @@ export async function startWatching(beacon: Beacon): Promise<void> {
             stream,
             beacon.broadcasterName,
             () => stopWatching(beacon.sessionId),
-            { closeLabel: `Parar de assistir ${beacon.broadcasterName}` }
+            {
+                closeLabel: `Parar de assistir ${beacon.broadcasterName}`,
+                userId: beacon.broadcasterId
+            }
         );
     };
 

@@ -228,9 +228,152 @@ const CSS = `
     pointer-events: none;
 }
 .p2ps-launcher-hidden { display: none; }
+.p2ps-menu {
+    position: fixed;
+    z-index: 4200;
+    min-width: 220px;
+    padding: 6px;
+    border-radius: 8px;
+    background: var(--background-floating, #18191c);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+    color: var(--header-primary, #fff);
+    font-size: 14px;
+}
+.p2ps-menu-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 9px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.p2ps-menu-item:hover { background: var(--brand-experiment, #5865f2); }
+.p2ps-menu-value { color: var(--text-muted, #b5bac1); font-size: 13px; }
+.p2ps-menu-item:hover .p2ps-menu-value { color: #fff; }
+.p2ps-menu-check { width: 12px; text-align: right; }
+.p2ps-menu-sep {
+    height: 1px;
+    margin: 5px 4px;
+    background: var(--background-modifier-accent, #3f4147);
+}
+.p2ps-menu-danger { color: var(--status-danger, #ed4245); }
+.p2ps-menu-danger:hover { background: var(--status-danger, #ed4245); color: #fff; }
+.p2ps-submenu {
+    display: none;
+    position: absolute;
+    left: 100%;
+    top: -6px;
+    margin-left: 4px;
+    min-width: 150px;
+    padding: 6px;
+    border-radius: 8px;
+    background: var(--background-floating, #18191c);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+}
+.p2ps-menu-parent:hover > .p2ps-submenu { display: block; }
+
+.p2ps-clickable { cursor: pointer; }
+.p2ps-clickable:hover { filter: brightness(1.15); }
+.p2ps-tile-video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+    z-index: 1;
+    border-radius: inherit;
+}
+.p2ps-tile-bar {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    z-index: 3;
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    background: rgb(0 0 0 / 65%);
+    opacity: 0;
+    transition: opacity .15s;
+}
+[class*="tileChild"]:hover .p2ps-tile-bar { opacity: 1; }
+.p2ps-tile-bar button {
+    background: none;
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 2px 4px;
+}
+.p2ps-tile-bar button:hover { color: var(--brand-experiment, #5865f2); }
+.p2ps-tile-vol { width: 60px; accent-color: var(--brand-experiment, #5865f2); }
+@media (prefers-reduced-motion: reduce) {
+    .p2ps-tile-bar { transition: none; }
+}
+.p2ps-tile-cta {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 3;
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    background: var(--status-danger, #ed4245);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgb(0 0 0 / 45%);
+    transition: transform .12s, filter .12s;
+    white-space: nowrap;
+}
+.p2ps-tile-cta:hover { filter: brightness(1.12); transform: translate(-50%, -50%) scale(1.04); }
+.p2ps-cta-play { font-size: 12px; }
+@media (prefers-reduced-motion: reduce) {
+    .p2ps-tile-cta { transition: none; }
+    .p2ps-tile-cta:hover { transform: translate(-50%, -50%); }
+}
+.p2ps-tile-live {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 2;
+    /* O overlay do Discord desliga eventos; o selo precisa reativar. */
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+    background: var(--status-danger, #ed4245);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgb(0 0 0 / 35%);
+}
+.p2ps-tile-live:hover:not(:disabled) { filter: brightness(1.15); }
+.p2ps-tile-live:disabled { cursor: default; opacity: .9; }
 .p2ps-live-chip {
     display: inline-flex;
     align-items: center;
+    align-self: center;
+    flex: 0 0 auto;
+    vertical-align: middle;
     margin-left: 6px;
     padding: 0 5px;
     border-radius: 4px;
@@ -263,6 +406,7 @@ export function injectStyles(): void {
 }
 
 export function removeStyles(): void {
+    closeBroadcastMenu();
     BdApi.DOM.removeStyle("P2PShare");
 }
 
@@ -309,7 +453,7 @@ let launcher: HTMLElement | null = null;
 
 export function mountLauncher(opts: {
     position: { x: number; y: number; };
-    onToggle: () => void;
+    onToggle: (anchor: HTMLElement) => void;
     onMoved: (pos: { x: number; y: number; }) => void;
 }): void {
     unmountLauncher();
@@ -325,7 +469,7 @@ export function mountLauncher(opts: {
     let moved = false;
     el.addEventListener("mousedown", () => { moved = false; });
     el.addEventListener("mousemove", e => { if (e.buttons) moved = true; });
-    el.addEventListener("click", () => { if (!moved) opts.onToggle(); });
+    el.addEventListener("click", () => { if (!moved) opts.onToggle(el); });
 
     makeDraggable(el, el, () => {
         opts.onMoved({ x: parseInt(el.style.left, 10), y: parseInt(el.style.top, 10) });
@@ -490,7 +634,7 @@ function removeBtn(btn: HTMLElement): void {
 }
 
 export function mountVoiceButton(opts: {
-    onToggle: () => void;
+    onToggle: (anchor: HTMLElement) => void;
     onAnchorChange: (visible: boolean) => void;
 }): () => void {
     const sync = () => {
@@ -512,7 +656,7 @@ export function mountVoiceButton(opts: {
             btn.addEventListener("click", e => {
                 e.preventDefault();
                 e.stopPropagation();
-                opts.onToggle();
+                opts.onToggle(btn);
             });
 
             site.place(btn);
@@ -523,8 +667,10 @@ export function mountVoiceButton(opts: {
         // Achar onde injetar nao basta: um botao invisivel deixaria o usuario
         // sem forma de transmitir, e o flutuante ja teria sido escondido.
         opts.onAnchorChange([...voiceBtns.values()].some(isVisible));
-        // A lista de participantes re-renderiza sozinha; o selo precisa voltar.
+        // A lista e a grade re-renderizam sozinhas; os selos precisam voltar.
         applyLiveBadges();
+        applyTileBadges();
+        applyTileVideos();
         dumpVoiceDiagnostics();
     };
 
@@ -602,6 +748,8 @@ export interface LiveUser {
     id: string;
     /** Nome de exibicao e username: o painel pode mostrar qualquer um dos dois. */
     names: string[];
+    /** Ausente quando sou eu transmitindo: nao ha o que assistir. */
+    onWatch?: () => void;
 }
 
 let liveUsers: LiveUser[] = [];
@@ -632,20 +780,274 @@ function applyLiveBadges(): void {
         }
         if (existing) continue;
 
+        const user = liveUsers.find(u =>
+            (id && u.id === id) || (!!text && u.names.includes(text)));
+
         const chip = document.createElement("span");
         chip.className = "p2ps-live-chip";
         chip.textContent = "AO VIVO";
-        chip.title = "Transmitindo via P2PShare";
 
-        // chiplet e' onde o Discord poe os proprios selos ao lado do nome.
-        const slot = row.querySelector('[class*="chipletParent"]') ?? nameEl?.parentElement;
+        if (user?.onWatch) {
+            chip.classList.add("p2ps-clickable");
+            chip.title = "Clique para assistir";
+            chip.addEventListener("click", e => {
+                e.preventDefault();
+                e.stopPropagation();
+                user.onWatch!();
+            });
+        } else {
+            chip.title = "Transmitindo via P2PShare";
+        }
+
+        // Ao lado do nome, na mesma linha. O chipletParent parece o lugar
+        // obvio, mas e' um bloco proprio com espacamento e mascara, e o selo
+        // sai desalinhado dali.
+        const slot = row.querySelector('[class*="usernameContainer"]')
+            ?? row.querySelector('[class*="chipletParent"]')
+            ?? nameEl?.parentElement;
         slot?.appendChild(chip);
     }
+}
+
+/**
+ * Marca o quadro de video da pessoa na grade da chamada.
+ *
+ * O Discord identifica cada quadro com data-selenium-video-tile = id do
+ * usuario, o que dispensa casar por nome. O selo entra no overlay de cima,
+ * que o Discord deixa reservado e vazio, e e' clicavel: quem ve o quadro
+ * escuro do amigo tem ali o caminho mais curto para abrir a transmissao.
+ */
+function applyTileBadges(): void {
+    for (const tile of document.querySelectorAll<HTMLElement>("[data-selenium-video-tile]")) {
+        const id = tile.getAttribute("data-selenium-video-tile");
+        const user = liveUsers.find(u => u.id === id);
+        const existing = tile.querySelector(".p2ps-tile-live");
+
+        if (!user) {
+            existing?.remove();
+            tile.querySelector(".p2ps-tile-cta")?.remove();
+            continue;
+        }
+
+        // Ja assistindo: o botao sai, o video ocupa o quadro.
+        if (!user.onWatch) tile.querySelector(".p2ps-tile-cta")?.remove();
+        if (existing) continue;
+
+        const badge = document.createElement("span");
+        badge.className = "p2ps-tile-live";
+        badge.textContent = "AO VIVO";
+        badge.title = user.onWatch
+            ? "Transmitindo via P2PShare"
+            : "Você está transmitindo via P2PShare";
+
+        // O overlay de cima e' o lugar que o Discord reserva para isto.
+        const slot = tile.querySelector('[class*="overlayTop"]')
+            ?? tile.querySelector('[class*="tileChild"]')
+            ?? tile;
+        slot.appendChild(badge);
+
+        // O selo do canto informa; quem age e' o botao no meio do quadro, que
+        // e' onde o olho vai parar num quadro sem video.
+        if (!user.onWatch) continue;
+
+        const child = tile.querySelector<HTMLElement>('[class*="tileChild"]') ?? tile;
+        if (child.querySelector(".p2ps-tile-cta")) continue;
+
+        const cta = document.createElement("button");
+        cta.type = "button";
+        cta.className = "p2ps-tile-cta";
+        cta.innerHTML = '<span class="p2ps-cta-play">▶</span> Assistir transmissão';
+        cta.addEventListener("click", e => {
+            e.preventDefault();
+            e.stopPropagation();
+            user.onWatch!();
+        });
+
+        child.appendChild(cta);
+    }
+}
+
+/**
+ * Leva a tela ate' o canal de voz indicado.
+ *
+ * Clicar em AO VIVO de dentro da lista lateral so' e' util se a pessoa passar
+ * a ver a chamada — senao o video seria pintado num quadro fora de vista.
+ * O proprio Discord marca cada canal com data-list-item-id.
+ */
+export function focusChannel(channelId: string): void {
+    const safe = channelId.replace(/[^\w-]/g, "");
+    if (!safe) return;
+
+    const link = document.querySelector<HTMLElement>(
+        `[data-list-item-id="channels___${safe}"]`);
+
+    link?.click();
 }
 
 export function setLiveUsers(users: LiveUser[]): void {
     liveUsers = users;
     applyLiveBadges();
+    applyTileBadges();
+}
+
+
+// ------------------------------------------------------- menu da transmissao
+
+export interface QualityChoice {
+    maxHeight: number | null;
+    maxFramerate: number | null;
+}
+
+const RESOLUTIONS: { label: string; value: number | null; }[] = [
+    { label: "Original", value: null },
+    { label: "1440p", value: 1440 },
+    { label: "1080p", value: 1080 },
+    { label: "720p", value: 720 },
+    { label: "480p", value: 480 }
+];
+
+const FRAMERATES: { label: string; value: number | null; }[] = [
+    { label: "Máximo", value: null },
+    { label: "60 fps", value: 60 },
+    { label: "30 fps", value: 30 },
+    { label: "15 fps", value: 15 }
+];
+
+let openMenu: HTMLElement | null = null;
+
+export function closeBroadcastMenu(): void {
+    openMenu?.remove();
+    openMenu = null;
+}
+
+/**
+ * Menu do botao enquanto a transmissao esta no ar.
+ *
+ * Enquanto transmite, o clique deixa de ser liga/desliga: e' daqui que se
+ * ajusta qualidade e se encerra. As opcoes valem na hora, sem recapturar.
+ */
+export function openBroadcastMenu(anchor: HTMLElement, opts: {
+    quality: QualityChoice;
+    onQuality: (quality: QualityChoice) => void;
+    onStop: () => void;
+}): void {
+    closeBroadcastMenu();
+
+    const menu = document.createElement("div");
+    menu.className = "p2ps-menu";
+
+    const current = { ...opts.quality };
+
+    const addSubmenu = (
+        title: string,
+        options: { label: string; value: number | null; }[],
+        selected: () => number | null,
+        apply: (value: number | null) => void
+    ) => {
+        const item = document.createElement("div");
+        item.className = "p2ps-menu-item p2ps-menu-parent";
+
+        const label = document.createElement("span");
+        label.textContent = title;
+
+        const value = document.createElement("span");
+        value.className = "p2ps-menu-value";
+        const paintValue = () => {
+            value.textContent =
+                (options.find(o => o.value === selected())?.label ?? "—") + "  ›";
+        };
+        paintValue();
+
+        item.append(label, value);
+
+        const sub = document.createElement("div");
+        sub.className = "p2ps-submenu";
+
+        for (const option of options) {
+            const row = document.createElement("div");
+            row.className = "p2ps-menu-item";
+            row.textContent = option.label;
+
+            const check = document.createElement("span");
+            check.className = "p2ps-menu-check";
+            check.textContent = option.value === selected() ? "✓" : "";
+            row.appendChild(check);
+
+            row.addEventListener("click", e => {
+                e.stopPropagation();
+                apply(option.value);
+                paintValue();
+                for (const other of sub.querySelectorAll(".p2ps-menu-check")) {
+                    other.textContent = "";
+                }
+                check.textContent = "✓";
+                opts.onQuality(current);
+            });
+
+            sub.appendChild(row);
+        }
+
+        item.appendChild(sub);
+        menu.appendChild(item);
+    };
+
+    addSubmenu("Resolução", RESOLUTIONS,
+        () => current.maxHeight,
+        v => { current.maxHeight = v; });
+
+    addSubmenu("Taxa de quadros", FRAMERATES,
+        () => current.maxFramerate,
+        v => { current.maxFramerate = v; });
+
+    const sep = document.createElement("div");
+    sep.className = "p2ps-menu-sep";
+    menu.appendChild(sep);
+
+    const stop = document.createElement("div");
+    stop.className = "p2ps-menu-item p2ps-menu-danger";
+    stop.textContent = "Parar de transmitir";
+    stop.addEventListener("click", e => {
+        e.stopPropagation();
+        closeBroadcastMenu();
+        opts.onStop();
+    });
+    menu.appendChild(stop);
+
+    document.body.appendChild(menu);
+    openMenu = menu;
+
+    // Acima do botao, preso a' tela: a barra vive no rodape da chamada.
+    const rect = anchor.getBoundingClientRect();
+    const box = menu.getBoundingClientRect();
+    const left = Math.min(
+        Math.max(8, rect.left + rect.width / 2 - box.width / 2),
+        window.innerWidth - box.width - 8
+    );
+    menu.style.left = `${left}px`;
+    menu.style.top = `${Math.max(8, rect.top - box.height - 8)}px`;
+
+    const onOutside = (e: MouseEvent) => {
+        if (!menu.contains(e.target as Node)) {
+            closeBroadcastMenu();
+            cleanup();
+        }
+    };
+    const onKey = (e: KeyboardEvent) => {
+        if (e.key === "Escape") {
+            closeBroadcastMenu();
+            cleanup();
+        }
+    };
+    const cleanup = () => {
+        document.removeEventListener("mousedown", onOutside, true);
+        document.removeEventListener("keydown", onKey, true);
+    };
+
+    // Adiado um tique: o clique que abriu o menu ainda esta borbulhando.
+    setTimeout(() => {
+        document.addEventListener("mousedown", onOutside, true);
+        document.addEventListener("keydown", onKey, true);
+    }, 0);
 }
 
 // ------------------------------------------------------------ source picker
@@ -775,14 +1177,182 @@ export function openSourcePicker(sources: CaptureSource[]): Promise<string | nul
 
 const overlays = new Map<string, HTMLElement>();
 
-export function mountOverlay(
+
+// --------------------------------------------- video dentro do quadro
+
+interface TileSession {
+    userId: string;
+    stream: MediaStream;
+    title: string;
+    muted: boolean;
+    /** Falso na prévia da própria tela: não há o que "parar de assistir". */
+    closable: boolean;
+    onClose: () => void;
+    /** Toca o som uma vez so', fora dos quadros. */
+    audio: HTMLAudioElement | null;
+    volume: number;
+}
+
+const tileSessions = new Map<string, TileSession>();
+/** Sessoes que estao em janela solta, mas cujo quadro ainda existe. */
+const poppedOut = new Map<string, TileSession>();
+
+function tilesOf(userId: string): HTMLElement[] {
+    // Id do Discord é numérico; limpar o resto evita montar um seletor inválido.
+    const safe = userId.replace(/[^\w-]/g, "");
+    if (!safe) return [];
+
+    return [...document.querySelectorAll<HTMLElement>(
+        `[data-selenium-video-tile="${safe}"]`)];
+}
+
+function buildTileBar(sessionId: string, session: TileSession): HTMLElement {
+    const bar = document.createElement("div");
+    bar.className = "p2ps-tile-bar";
+
+    const mkBtn = (text: string, title: string, onClick: () => void) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = text;
+        b.title = title;
+        b.addEventListener("click", e => {
+            e.preventDefault();
+            e.stopPropagation();
+            onClick();
+        });
+        return b;
+    };
+
+    if (!session.muted) {
+        const vol = document.createElement("input");
+        vol.type = "range";
+        vol.min = "0";
+        vol.max = "100";
+        vol.value = String(Math.round(session.volume * 100));
+        vol.className = "p2ps-tile-vol";
+        vol.title = "Volume";
+        // Sem isto o clique atravessa e o Discord troca o foco do quadro.
+        vol.addEventListener("mousedown", e => e.stopPropagation());
+        vol.addEventListener("click", e => e.stopPropagation());
+        vol.addEventListener("input", () => {
+            session.volume = Number(vol.value) / 100;
+            if (session.audio) session.audio.volume = session.volume;
+        });
+        bar.appendChild(vol);
+    }
+
+    bar.appendChild(mkBtn("⛶", "Tela cheia", () => {
+        const video = bar.parentElement?.querySelector("video");
+        void (video as HTMLVideoElement | null)?.requestFullscreen();
+    }));
+
+    bar.appendChild(mkBtn("⧉", "Abrir em janela solta", () => popOut(sessionId)));
+
+    if (session.closable) {
+        bar.appendChild(mkBtn("✕", `Parar de assistir ${session.title}`, session.onClose));
+    }
+
+    return bar;
+}
+
+/**
+ * Pinta o stream por cima do avatar, no quadro da propria pessoa.
+ *
+ * A mesma pessoa aparece em mais de um quadro (o grande em foco e o da tira
+ * de baixo). Todos recebem o video, mas mudos: o som sai de um elemento de
+ * audio unico, senao tocaria duplicado.
+ */
+function applyTileVideos(): void {
+    const claimed = new Set<HTMLElement>();
+
+    for (const [sessionId, session] of tileSessions) {
+        for (const tile of tilesOf(session.userId)) {
+            const child = tile.querySelector<HTMLElement>('[class*="tileChild"]') ?? tile;
+            claimed.add(child);
+
+            if (child.querySelector(".p2ps-tile-video")) continue;
+
+            const video = document.createElement("video");
+            video.className = "p2ps-tile-video";
+            video.autoplay = true;
+            video.playsInline = true;
+            video.muted = true;
+            video.srcObject = session.stream;
+
+            child.appendChild(video);
+            child.appendChild(buildTileBar(sessionId, session));
+        }
+    }
+
+    // Quadro que deixou de ter sessao: limpa o que sobrou.
+    for (const el of document.querySelectorAll<HTMLElement>(".p2ps-tile-video")) {
+        const child = el.parentElement;
+        if (child && !claimed.has(child)) {
+            el.remove();
+            child.querySelector(".p2ps-tile-bar")?.remove();
+        }
+    }
+}
+
+/**
+ * Tira do quadro e abre em janela solta, guardando a sessao para poder voltar.
+ *
+ * Fechar a janela devolve ao quadro em vez de encerrar: quem soltou queria
+ * mover a transmissao, nao parar de assistir. Parar continua sendo o ✕ do
+ * quadro, e a janela ganha um ⏹ para quem preferir encerrar dali.
+ */
+function popOut(sessionId: string): void {
+    const session = tileSessions.get(sessionId);
+    if (!session) return;
+
+    detachFromTiles(sessionId, { keepAudio: true });
+    poppedOut.set(sessionId, session);
+
+    mountFloatingOverlay(sessionId, session.stream, session.title, session.onClose, {
+        muted: session.muted,
+        onDock: () => dockBack(sessionId)
+    });
+}
+
+function dockBack(sessionId: string): void {
+    const session = poppedOut.get(sessionId);
+    if (!session) return;
+
+    poppedOut.delete(sessionId);
+    unmountFloatingOverlay(sessionId);
+
+    tileSessions.set(sessionId, session);
+    applyTileVideos();
+}
+
+function detachFromTiles(sessionId: string, opts: { keepAudio?: boolean; } = {}): void {
+    const session = tileSessions.get(sessionId);
+    if (!session) return;
+
+    tileSessions.delete(sessionId);
+
+    for (const tile of tilesOf(session.userId)) {
+        tile.querySelector(".p2ps-tile-video")?.remove();
+        tile.querySelector(".p2ps-tile-bar")?.remove();
+    }
+
+    // Soltar em janela nao interrompe o som; encerrar de vez, sim.
+    if (!opts.keepAudio) {
+        session.audio?.pause();
+        session.audio?.remove();
+        session.audio = null;
+    }
+}
+
+
+function mountFloatingOverlay(
     sessionId: string,
     stream: MediaStream,
     title: string,
     onClose: () => void,
-    opts: { muted?: boolean; closeLabel?: string; } = {}
+    opts: { muted?: boolean; closeLabel?: string; onDock?: () => void; } = {}
 ): void {
-    unmountOverlay(sessionId);
+    unmountFloatingOverlay(sessionId);
 
     const el = document.createElement("div");
     el.className = "p2ps-overlay";
@@ -841,8 +1411,22 @@ export function mountOverlay(
         void video.requestFullscreen();
     });
     const closeBtn = el.querySelector('[data-act="close"]') as HTMLButtonElement;
-    closeBtn.title = opts.closeLabel ?? "Fechar";
-    closeBtn.addEventListener("click", onClose);
+
+    if (opts.onDock) {
+        // Fechar devolve ao quadro; encerrar de vez fica num botao proprio.
+        closeBtn.title = "Voltar para o quadro";
+        closeBtn.addEventListener("click", opts.onDock);
+
+        const stop = document.createElement("button");
+        stop.type = "button";
+        stop.textContent = "⏹";
+        stop.title = `Parar de assistir ${title}`;
+        stop.addEventListener("click", onClose);
+        closeBtn.insertAdjacentElement("beforebegin", stop);
+    } else {
+        closeBtn.title = opts.closeLabel ?? "Fechar";
+        closeBtn.addEventListener("click", onClose);
+    }
 
     makeDraggable(el, el.querySelector(".p2ps-overlay-bar") as HTMLElement);
 
@@ -885,7 +1469,72 @@ export function setOverlayViewers(sessionId: string, names: string[]): void {
     }
 }
 
+/**
+ * Mostra a transmissão. Prefere o quadro da pessoa na grade da chamada, que é
+ * onde quem assiste já está olhando; cai para a janela flutuante quando não há
+ * quadro — fora de chamada, ou antes da grade renderizar.
+ */
+export function mountOverlay(
+    sessionId: string,
+    stream: MediaStream,
+    title: string,
+    onClose: () => void,
+    opts: {
+        muted?: boolean;
+        closeLabel?: string;
+        userId?: string;
+        closable?: boolean;
+    } = {}
+): void {
+    unmountOverlay(sessionId);
+
+    if (opts.userId && tilesOf(opts.userId).length) {
+        const session: TileSession = {
+            userId: opts.userId,
+            stream,
+            title,
+            muted: opts.muted === true,
+            closable: opts.closable !== false,
+            onClose,
+            audio: null,
+            volume: 1
+        };
+
+        if (!session.muted) {
+            // Um elemento só para o som: os quadros ficam mudos para não
+            // tocar duplicado quando a pessoa aparece em dois lugares.
+            const audio = document.createElement("audio");
+            audio.autoplay = true;
+            audio.srcObject = stream;
+            audio.style.display = "none";
+            document.body.appendChild(audio);
+            session.audio = audio;
+        }
+
+        tileSessions.set(sessionId, session);
+        applyTileVideos();
+        return;
+    }
+
+    mountFloatingOverlay(sessionId, stream, title, onClose, opts);
+}
+
+function unmountFloatingOverlay(sessionId: string): void {
+    const el = overlays.get(sessionId);
+    if (!el) return;
+
+    (el as any).__p2psCleanupDrag?.();
+    const video = el.querySelector("video");
+    if (video) video.srcObject = null;
+
+    el.remove();
+    overlays.delete(sessionId);
+}
+
 export function unmountOverlay(sessionId: string): void {
+    detachFromTiles(sessionId);
+    poppedOut.delete(sessionId);
+
     const el = overlays.get(sessionId);
     if (!el) return;
 
@@ -898,6 +1547,8 @@ export function unmountOverlay(sessionId: string): void {
 }
 
 export function unmountAllOverlays(): void {
+    for (const sessionId of [...tileSessions.keys()]) unmountOverlay(sessionId);
+    for (const sessionId of [...poppedOut.keys()]) unmountOverlay(sessionId);
     for (const sessionId of [...overlays.keys()]) unmountOverlay(sessionId);
 }
 

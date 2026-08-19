@@ -218,6 +218,27 @@ export function onMessageCreate(handler: (message: HostMessage) => void): () => 
     return () => FluxDispatcher().unsubscribe("MESSAGE_CREATE", listener);
 }
 
+
+/**
+ * Entrada, saida e troca de canal de voz.
+ *
+ * O Discord dispara VOICE_CHANNEL_SELECT com channelId null ao desconectar.
+ */
+export function onVoiceChannelChange(
+    handler: (channelId: string | null) => void
+): () => void {
+    const listener = (event: { channelId?: string | null; }) => {
+        try {
+            handler(event.channelId ?? null);
+        } catch (err) {
+            console.error("[P2PShare] handler de VOICE_CHANNEL_SELECT falhou", err);
+        }
+    };
+
+    FluxDispatcher().subscribe("VOICE_CHANNEL_SELECT", listener);
+    return () => FluxDispatcher().unsubscribe("VOICE_CHANNEL_SELECT", listener);
+}
+
 export function onMessageDelete(
     handler: (channelId: string, messageId: string) => void
 ): () => void {
