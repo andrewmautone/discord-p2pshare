@@ -33,7 +33,12 @@ function isBusy(): boolean {
 
 async function fetchLatest(): Promise<string | null> {
     try {
-        const res = await fetch(UPDATE_URL, { cache: "no-store" });
+        // Mesmo caminho do componente de áudio: fora da política de conteúdo
+        // do Discord, que barra parte dos hosts do GitHub.
+        const res = BdApi.Net?.fetch
+            ? await BdApi.Net.fetch(UPDATE_URL, { redirect: "follow" })
+            : await fetch(UPDATE_URL, { cache: "no-store" });
+
         if (!res.ok) {
             console.warn(`[P2PShare] updater: host respondeu ${res.status}`);
             return null;

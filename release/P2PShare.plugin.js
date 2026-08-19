@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.9.2
+ * @version 1.9.3
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -125,7 +125,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.9.2";
+var PLUGIN_VERSION = "1.9.3";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "e48cc114f63f556d1fa4945b24430040cb07a786dc03ef2e9052ed37b6796c72";
@@ -378,31 +378,11 @@ function helperPath() {
   const path = require("path");
   return path.join(BdApi.Plugins.folder, HELPER_NAME);
 }
-function downloadBuffer(url, hops = 0) {
-  return new Promise((resolve, reject) => {
-    if (hops > 5) {
-      reject(new Error("redirecionamentos demais"));
-      return;
-    }
-    require("https").get(url, { headers: { "User-Agent": "P2PShare" } }, (res) => {
-      const status = res.statusCode ?? 0;
-      const location = res.headers?.location;
-      if (status >= 300 && status < 400 && location) {
-        res.resume();
-        resolve(downloadBuffer(new URL(location, url).href, hops + 1));
-        return;
-      }
-      if (status !== 200) {
-        res.resume();
-        reject(new Error(`o servidor respondeu ${status}`));
-        return;
-      }
-      const chunks = [];
-      res.on("data", (c) => chunks.push(c));
-      res.on("end", () => resolve(Buffer.concat(chunks)));
-      res.on("error", reject);
-    }).on("error", reject);
-  });
+async function downloadBuffer(url) {
+  const net = BdApi.Net?.fetch;
+  const res = net ? await net(url, { redirect: "follow" }) : await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`o servidor respondeu ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
 }
 function sha256(buffer) {
   return require("crypto").createHash("sha256").update(buffer).digest("hex");
@@ -2471,7 +2451,7 @@ function isBusy() {
 }
 async function fetchLatest() {
   try {
-    const res = await fetch(UPDATE_URL, { cache: "no-store" });
+    const res = BdApi.Net?.fetch ? await BdApi.Net.fetch(UPDATE_URL, { redirect: "follow" }) : await fetch(UPDATE_URL, { cache: "no-store" });
     if (!res.ok) {
       console.warn(`[P2PShare] updater: host respondeu ${res.status}`);
       return null;

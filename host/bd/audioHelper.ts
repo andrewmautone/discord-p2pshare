@@ -37,45 +37,28 @@ function helperPath(): string {
 }
 
 /**
- * Baixa pelo módulo https do Node, não pelo fetch do navegador.
+ * Baixa um arquivo por fora da política de conteúdo do Discord.
  *
- * O fetch do renderer passa pela política de conteúdo do Discord, e o
- * download de release do GitHub redireciona para outro host
- * (release-assets.githubusercontent.com) que ela recusa — o erro que aparece
- * é um "Failed to fetch" sem explicação. As requisições do Node não passam
- * por essa política.
+ * O `fetch` do renderer é barrado: o download de release do GitHub redireciona
+ * para outro host, e a política recusa — chega um "Failed to fetch" mudo. O
+ * `BdApi.Net.fetch` sai pelo processo principal, onde essa política não vale,
+ * e devolve uma Response comum.
+ *
+ * O módulo `https` do Node não serve aqui: o BetterDiscord o substitui por um
+ * shim que não tem a interface de stream do Node.
  */
-function downloadBuffer(url: string, hops = 0): Promise<Buffer> {
-    return new Promise((resolve, reject) => {
-        if (hops > 5) {
-            reject(new Error("redirecionamentos demais"));
-            return;
-        }
+async function downloadBuffer(url: string): Promise<Buffer> {
+    const net = BdApi.Net?.fetch;
 
-        require("https")
-            .get(url, { headers: { "User-Agent": "P2PShare" } }, (res: any) => {
-                const status = res.statusCode ?? 0;
-                const location = res.headers?.location;
+    // BetterDiscord antigo, sem BdApi.Net: tenta o fetch comum, que funciona
+    // para hosts permitidos pela política.
+    const res = net
+        ? await net(url, { redirect: "follow" })
+        : await fetch(url, { cache: "no-store" });
 
-                if (status >= 300 && status < 400 && location) {
-                    res.resume();
-                    resolve(downloadBuffer(new URL(location, url).href, hops + 1));
-                    return;
-                }
+    if (!res.ok) throw new Error(`o servidor respondeu ${res.status}`);
 
-                if (status !== 200) {
-                    res.resume();
-                    reject(new Error(`o servidor respondeu ${status}`));
-                    return;
-                }
-
-                const chunks: Buffer[] = [];
-                res.on("data", (c: Buffer) => chunks.push(c));
-                res.on("end", () => resolve(Buffer.concat(chunks)));
-                res.on("error", reject);
-            })
-            .on("error", reject);
-    });
+    return Buffer.from(await res.arrayBuffer());
 }
 
 function sha256(buffer: Buffer): string {
