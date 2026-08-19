@@ -14,14 +14,7 @@ import {
 } from "./beacon";
 import { formatHandshakeName, type HandshakeKind, parseHandshakeName } from "./codec";
 import { HANDSHAKE_TTL_MS } from "./constants";
-import {
-    deleteMessage,
-    fetchAttachmentText,
-    getCurrentUserId,
-    sendMessage,
-    uploadTextAttachment
-} from "./discord/api";
-import { onMessageCreate, onMessageDelete } from "./discord/events";
+import { host } from "./host";
 
 export type { Beacon } from "./beacon";
 
@@ -33,11 +26,11 @@ export interface HandshakeEvent {
 }
 
 export function postBeacon(channelId: string, sessionId: string, username: string): Promise<string> {
-    return sendMessage(channelId, beaconContent(sessionId, username));
+    return host.sendMessage(channelId, beaconContent(sessionId, username));
 }
 
 export function removeBeacon(channelId: string, messageId: string): Promise<void> {
-    return deleteMessage(channelId, messageId);
+    return host.deleteMessage(channelId, messageId);
 }
 
 /** Posta um offer/answer como anexo .txt, roteado pelo nome do arquivo. */
@@ -48,7 +41,7 @@ export async function sendHandshake(
     targetUserId: string,
     sdp: string
 ): Promise<void> {
-    await uploadTextAttachment(
+    await host.uploadTextAttachment(
         channelId,
         formatHandshakeName({ sessionId, kind, targetUserId }),
         handshakeBody(kind, sdp),
@@ -68,9 +61,9 @@ export function observeSignals(handlers: {
     onBeaconGone?: (channelId: string, messageId: string) => void;
     onHandshake?: (event: HandshakeEvent) => void;
 }): () => void {
-    const myId = getCurrentUserId();
+    const myId = host.getCurrentUserId();
 
-    const unsubCreate = onMessageCreate(message => {
+    const unsubCreate = host.onMessageCreate(message => {
         const beacon = parseBeacon(message);
         if (beacon) {
             handlers.onBeacon?.(beacon);
@@ -84,14 +77,14 @@ export function observeSignals(handlers: {
             if (message.author.id === myId) {
                 // É meu: some com ele depois que o outro lado teve tempo de baixar.
                 setTimeout(() => {
-                    deleteMessage(message.channel_id, message.id).catch(() => { });
+                    host.deleteMessage(message.channel_id, message.id).catch(() => { });
                 }, HANDSHAKE_TTL_MS);
                 continue;
             }
 
             if (name.targetUserId !== myId) continue;
 
-            fetchAttachmentText(attachment.url)
+            host.fetchAttachmentText(attachment.url)
                 .then(text => {
                     const body = parseHandshakeBody(text);
                     if (!body) return;
@@ -107,7 +100,7 @@ export function observeSignals(handlers: {
         }
     });
 
-    const unsubDelete = onMessageDelete((channelId, messageId) => {
+    const unsubDelete = host.onMessageDelete((channelId, messageId) => {
         handlers.onBeaconGone?.(channelId, messageId);
     });
 

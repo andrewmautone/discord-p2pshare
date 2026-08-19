@@ -7,7 +7,7 @@
 import { Button } from "@webpack/common";
 
 import { type BeaconSource, parseBeacon } from "../beacon";
-import { getCurrentUserId } from "../discord/api";
+import { host } from "../host";
 import { startWatching } from "../watch";
 
 /**
@@ -17,7 +17,7 @@ import { startWatching } from "../watch";
 export function BeaconAccessory({ message }: { message: BeaconSource; }) {
     const beacon = parseBeacon(message);
     if (!beacon) return null;
-    if (beacon.broadcasterId === getCurrentUserId()) return null;
+    if (beacon.broadcasterId === host.getCurrentUserId()) return null;
 
     return (
         <Button

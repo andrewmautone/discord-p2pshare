@@ -4,15 +4,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { showToast, Toasts } from "@webpack/common";
-
 import { CaptureError, captureScreen } from "./capture";
 import { newSessionId } from "./codec";
-import { getCurrentUsername, getVoiceChannelId } from "./discord/api";
-import { settings } from "./index";
+import { host } from "./host";
 import { BroadcastPeers, type PeerTransport } from "./peers";
 import { observeSignals, postBeacon, removeBeacon, sendHandshake } from "./signaling";
-import { openSourcePicker } from "./ui/SourcePicker";
 
 interface Session {
     sessionId: string;
@@ -54,31 +50,27 @@ export function getBroadcastState(): BroadcastState {
     return currentState();
 }
 
-function toast(message: string, type: string): void {
-    showToast(message, type);
-}
-
 export async function startBroadcast(): Promise<void> {
     if (session) {
-        toast("Você já está transmitindo", Toasts.Type.MESSAGE);
+        host.toast("Você já está transmitindo", "info");
         return;
     }
 
-    const channelId = getVoiceChannelId();
+    const channelId = host.getVoiceChannelId();
     if (!channelId) {
-        toast("Entre num canal de voz primeiro", Toasts.Type.FAILURE);
+        host.toast("Entre num canal de voz primeiro", "error");
         return;
     }
 
     let stream: MediaStream;
     try {
-        stream = await captureScreen({ pickSource: openSourcePicker });
+        stream = await captureScreen({ pickSource: host.pickSource });
     } catch (err) {
-        toast(
+        host.toast(
             err instanceof CaptureError
                 ? err.message
                 : `falha inesperada na captura: ${(err as Error).message}`,
-            Toasts.Type.FAILURE
+            "error"
         );
         return;
     }
@@ -90,7 +82,7 @@ export async function startBroadcast(): Promise<void> {
     };
 
     const peers = new BroadcastPeers(stream, transport, {
-        budgetMbps: settings.store.uploadBudgetMbps
+        budgetMbps: host.getBudgetMbps()
     });
     peers.onCountChange = notify;
 
@@ -108,18 +100,18 @@ export async function startBroadcast(): Promise<void> {
 
     let beaconId: string;
     try {
-        beaconId = await postBeacon(channelId, sessionId, getCurrentUsername());
+        beaconId = await postBeacon(channelId, sessionId, host.getCurrentUsername());
     } catch (err) {
         // Sem beacon ninguém descobre a transmissão: desfaz tudo.
         unsubscribe();
         stream.getTracks().forEach(track => track.stop());
-        toast(`não deu para anunciar a transmissão: ${(err as Error).message}`, Toasts.Type.FAILURE);
+        host.toast(`não deu para anunciar a transmissão: ${(err as Error).message}`, "error");
         return;
     }
 
     session = { sessionId, channelId, beaconId, stream, peers, unsubscribe };
     notify();
-    toast("Transmitindo via P2P", Toasts.Type.SUCCESS);
+    host.toast("Transmitindo via P2P", "success");
 }
 
 export async function stopBroadcast(): Promise<void> {
@@ -140,5 +132,5 @@ export async function stopBroadcast(): Promise<void> {
     }
 
     notify();
-    toast("Transmissão encerrada", Toasts.Type.MESSAGE);
+    host.toast("Transmissão encerrada", "info");
 }

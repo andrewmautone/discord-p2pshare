@@ -8,7 +8,7 @@ import "./overlay.css";
 
 import { createRoot, React, useEffect, useRef, useState } from "@webpack/common";
 
-import { settings } from "../index";
+import { settings } from "../settings";
 
 interface OverlayProps {
     stream: MediaStream;

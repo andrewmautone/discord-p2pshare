@@ -4,12 +4,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { showToast, Toasts } from "@webpack/common";
-
-import { getCurrentUserId } from "./discord/api";
+import { host } from "./host";
 import { type PeerTransport, ViewerPeer } from "./peers";
 import { type Beacon, observeSignals, sendHandshake } from "./signaling";
-import { mountOverlay, unmountAllOverlays, unmountOverlay } from "./ui/ViewerOverlay";
 
 /** Beacons vivos, por messageId. */
 const beacons = new Map<string, Beacon>();
@@ -48,7 +45,7 @@ export async function startWatching(beacon: Beacon): Promise<void> {
     watching.set(beacon.sessionId, peer);
 
     peer.onStream = stream => {
-        mountOverlay(
+        host.mountOverlay(
             beacon.sessionId,
             stream,
             beacon.broadcasterName,
@@ -57,15 +54,15 @@ export async function startWatching(beacon: Beacon): Promise<void> {
     };
 
     peer.onFailed = reason => {
-        showToast(reason, Toasts.Type.FAILURE);
+        host.toast(reason, "error");
         stopWatching(beacon.sessionId);
     };
 
     try {
         await peer.start();
-        showToast(`Conectando com ${beacon.broadcasterName}…`, Toasts.Type.MESSAGE);
+        host.toast(`Conectando com ${beacon.broadcasterName}…`, "info");
     } catch (err) {
-        showToast(`não deu para pedir a transmissão: ${(err as Error).message}`, Toasts.Type.FAILURE);
+        host.toast(`não deu para pedir a transmissão: ${(err as Error).message}`, "error");
         stopWatching(beacon.sessionId);
     }
 }
@@ -73,12 +70,12 @@ export async function startWatching(beacon: Beacon): Promise<void> {
 export function stopWatching(sessionId: string): void {
     watching.get(sessionId)?.close();
     watching.delete(sessionId);
-    unmountOverlay(sessionId);
+    host.unmountOverlay(sessionId);
 }
 
 /** Assina o chat para descobrir beacons e receber answers. Devolve a limpeza. */
 export function initWatcher(): () => void {
-    const myId = getCurrentUserId();
+    const myId = host.getCurrentUserId();
 
     const unsubscribe = observeSignals({
         onBeacon: beacon => {
@@ -87,6 +84,11 @@ export function initWatcher(): () => void {
 
             beacons.set(beacon.messageId, beacon);
             notifyBeacons();
+
+            host.announceBeacon(
+                { sessionId: beacon.sessionId, broadcasterName: beacon.broadcasterName },
+                () => { void startWatching(beacon); }
+            );
         },
 
         onBeaconGone: (_channelId, messageId) => {
@@ -94,6 +96,7 @@ export function initWatcher(): () => void {
             if (!beacon) return;
 
             beacons.delete(messageId);
+            host.revokeBeacon(beacon.sessionId);
             stopWatching(beacon.sessionId);
             notifyBeacons();
         },
@@ -110,7 +113,8 @@ export function initWatcher(): () => void {
     return () => {
         unsubscribe();
         for (const sessionId of [...watching.keys()]) stopWatching(sessionId);
-        unmountAllOverlays();
+        host.unmountAllOverlays();
+        for (const beacon of beacons.values()) host.revokeBeacon(beacon.sessionId);
         beacons.clear();
         notifyBeacons();
     };
