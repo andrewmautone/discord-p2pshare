@@ -382,6 +382,10 @@ const CSS = `
 .p2ps-tile-live:disabled { cursor: default; opacity: .9; }
 .p2ps-live-chip {
     display: inline-flex;
+    /* A linha do participante é um botão inteiro; sem isto o clique no selo
+       vira clique na pessoa. */
+    pointer-events: auto;
+    flex-shrink: 0;
     align-items: center;
     align-self: center;
     flex: 0 0 auto;
@@ -802,19 +806,25 @@ function applyLiveBadges(): void {
         if (user?.onWatch) {
             chip.classList.add("p2ps-clickable");
             chip.title = "Clique para assistir";
-            chip.addEventListener("click", e => {
+            chip.setAttribute("role", "button");
+            chip.tabIndex = 0;
+
+            // mousedown também: o Discord abre o perfil da pessoa nesse evento,
+            // antes do clique chegar aqui.
+            const open = (e: Event) => {
                 e.preventDefault();
                 e.stopPropagation();
                 user.onWatch!();
-            });
+            };
+            chip.addEventListener("mousedown", e => e.stopPropagation());
+            chip.addEventListener("click", open);
         } else {
             chip.title = "Transmitindo via P2PShare";
         }
 
-        // Ao lado do nome, na mesma linha. O chipletParent parece o lugar
-        // obvio, mas e' um bloco proprio com espacamento e mascara, e o selo
-        // sai desalinhado dali.
-        const slot = row.querySelector('[class*="usernameContainer"]')
+        // À direita, junto dos ícones que o Discord já põe no fim da linha:
+        // dentro do bloco do nome o selo empurra o texto e quebra a linha.
+        const slot = row.querySelector('[class*="icons__"]')
             ?? row.querySelector('[class*="chipletParent"]')
             ?? nameEl?.parentElement;
         slot?.appendChild(chip);
@@ -829,6 +839,16 @@ function applyLiveBadges(): void {
  * que o Discord deixa reservado e vazio, e e' clicavel: quem ve o quadro
  * escuro do amigo tem ali o caminho mais curto para abrir a transmissao.
  */
+/** Id do usuário atual, lido do próprio BdApi para não voltar ao host. */
+function currentUserId(): string | null {
+    try {
+        return BdApi.Webpack.getModule((m: any) => m?.getCurrentUser && m?.getUser)
+            ?.getCurrentUser()?.id ?? null;
+    } catch {
+        return null;
+    }
+}
+
 function applyTileBadges(): void {
     for (const tile of document.querySelectorAll<HTMLElement>("[data-selenium-video-tile]")) {
         const id = tile.getAttribute("data-selenium-video-tile");
@@ -841,8 +861,10 @@ function applyTileBadges(): void {
             continue;
         }
 
-        // Ja assistindo: o botao sai, o video ocupa o quadro.
-        if (!user.onWatch) tile.querySelector(".p2ps-tile-cta")?.remove();
+        // Ja assistindo, ou o video chegou: o botao sai do caminho.
+        if (!user.onWatch || tile.querySelector(".p2ps-tile-video")) {
+            tile.querySelector(".p2ps-tile-cta")?.remove();
+        }
         if (existing) continue;
 
         const badge = document.createElement("span");
@@ -862,8 +884,16 @@ function applyTileBadges(): void {
         // e' onde o olho vai parar num quadro sem video.
         if (!user.onWatch) continue;
 
+        // Nunca no proprio quadro: nao existe assistir a si mesmo, e o botao
+        // apareceria por cima da previa — inclusive dentro do que esta sendo
+        // transmitido, ja' que a tela capturada mostra o proprio Discord.
+        if (id === currentUserId()) continue;
+
         const child = tile.querySelector<HTMLElement>('[class*="tileChild"]') ?? tile;
         if (child.querySelector(".p2ps-tile-cta")) continue;
+
+        // Ja' tem video no quadro: assistir e' o que ja' esta acontecendo.
+        if (child.querySelector(".p2ps-tile-video")) continue;
 
         const cta = document.createElement("button");
         cta.type = "button";

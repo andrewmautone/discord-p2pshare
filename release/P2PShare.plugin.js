@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.12.0
+ * @version 1.12.1
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.12.0";
+var PLUGIN_VERSION = "1.12.1";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "3b71f2742c6e92b0dd9621a332a55ce0dc51b19ded802c9bfa548de9e476b3cf";
@@ -1067,6 +1067,10 @@ var CSS = `
 .p2ps-tile-live:disabled { cursor: default; opacity: .9; }
 .p2ps-live-chip {
     display: inline-flex;
+    /* A linha do participante \xE9 um bot\xE3o inteiro; sem isto o clique no selo
+       vira clique na pessoa. */
+    pointer-events: auto;
+    flex-shrink: 0;
     align-items: center;
     align-self: center;
     flex: 0 0 auto;
@@ -1350,16 +1354,27 @@ function applyLiveBadges() {
     if (user?.onWatch) {
       chip.classList.add("p2ps-clickable");
       chip.title = "Clique para assistir";
-      chip.addEventListener("click", (e) => {
+      chip.setAttribute("role", "button");
+      chip.tabIndex = 0;
+      const open = (e) => {
         e.preventDefault();
         e.stopPropagation();
         user.onWatch();
-      });
+      };
+      chip.addEventListener("mousedown", (e) => e.stopPropagation());
+      chip.addEventListener("click", open);
     } else {
       chip.title = "Transmitindo via P2PShare";
     }
-    const slot = row.querySelector('[class*="usernameContainer"]') ?? row.querySelector('[class*="chipletParent"]') ?? nameEl?.parentElement;
+    const slot = row.querySelector('[class*="icons__"]') ?? row.querySelector('[class*="chipletParent"]') ?? nameEl?.parentElement;
     slot?.appendChild(chip);
+  }
+}
+function currentUserId() {
+  try {
+    return BdApi.Webpack.getModule((m) => m?.getCurrentUser && m?.getUser)?.getCurrentUser()?.id ?? null;
+  } catch {
+    return null;
   }
 }
 function applyTileBadges() {
@@ -1372,7 +1387,9 @@ function applyTileBadges() {
       tile.querySelector(".p2ps-tile-cta")?.remove();
       continue;
     }
-    if (!user.onWatch) tile.querySelector(".p2ps-tile-cta")?.remove();
+    if (!user.onWatch || tile.querySelector(".p2ps-tile-video")) {
+      tile.querySelector(".p2ps-tile-cta")?.remove();
+    }
     if (existing) continue;
     const badge = document.createElement("span");
     badge.className = "p2ps-tile-live";
@@ -1381,8 +1398,10 @@ function applyTileBadges() {
     const slot = tile.querySelector('[class*="overlayTop"]') ?? tile.querySelector('[class*="tileChild"]') ?? tile;
     slot.appendChild(badge);
     if (!user.onWatch) continue;
+    if (id === currentUserId()) continue;
     const child = tile.querySelector('[class*="tileChild"]') ?? tile;
     if (child.querySelector(".p2ps-tile-cta")) continue;
+    if (child.querySelector(".p2ps-tile-video")) continue;
     const cta = document.createElement("button");
     cta.type = "button";
     cta.className = "p2ps-tile-cta";
