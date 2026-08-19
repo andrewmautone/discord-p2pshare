@@ -256,7 +256,7 @@ describe("ViewerPeer", () => {
         assert.deepEqual(received, [fakeStream]);
     });
 
-    it("avisa quando a conexão falha, citando NAT simétrico", async () => {
+    it("avisa quando a conexão falha, sem afirmar a causa", async () => {
         const { transport } = recordingTransport();
         let created: FakePeer;
         const viewer = new ViewerPeer(transport, "broadcaster1", {
@@ -272,6 +272,9 @@ describe("ViewerPeer", () => {
         viewer.close();
 
         assert.equal(failures.length, 1);
-        assert.match(failures[0], /NAT sim/i);
+        assert.match(failures[0], /conexão direta/i);
+        // A causa não é conhecida no ponto da falha: afirmar CGNAT já levou a
+        // diagnóstico errado antes.
+        assert.doesNotMatch(failures[0], /CGNAT|NAT sim/i);
     });
 });

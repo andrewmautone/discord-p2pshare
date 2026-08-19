@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.14.0
+ * @version 1.15.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,14 +129,17 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.14.0";
+var PLUGIN_VERSION = "1.15.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/v${PLUGIN_VERSION}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "3b71f2742c6e92b0dd9621a332a55ce0dc51b19ded802c9bfa548de9e476b3cf";
 var UPDATE_URL = "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
 var ICE_SERVERS = [
+  { urls: "stun:stun.cloudflare.com:3478" },
   { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun.cloudflare.com:3478" }
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun.nextcloud.com:3478" },
+  { urls: "stun:stun.relay.metered.ca:80" }
 ];
 var ZW_CODEPOINTS = [8203, 8204, 8205, 8288];
 var ZW_DIGITS = ZW_CODEPOINTS.map((c) => String.fromCodePoint(c));
@@ -2131,13 +2134,13 @@ var ViewerPeer = class {
       }
       if (pc.connectionState === "failed") {
         this.fail(
-          "a conex\xE3o P2P falhou \u2014 prov\xE1vel NAT sim\xE9trico (CGNAT). Sem TURN n\xE3o tem como conectar"
+          "n\xE3o foi poss\xEDvel abrir a conex\xE3o direta com quem transmite. Costuma ser rede que bloqueia conex\xE3o direta, dos dois lados"
         );
       }
     };
     this.connectTimer = setTimeout(
       () => this.fail(
-        "tempo esgotado esperando a conex\xE3o \u2014 prov\xE1vel NAT sim\xE9trico (CGNAT)"
+        "tempo esgotado esperando a conex\xE3o com quem transmite"
       ),
       PEER_CONNECT_TIMEOUT_MS
     );

@@ -9,7 +9,7 @@ export const PROTOCOL_VERSION = 1;
 export const PLUGIN_URL = "https://github.com/andrewmautone/discord-p2pshare";
 
 /** Versão publicada. O build do BetterDiscord escreve isto no cabeçalho. */
-export const PLUGIN_VERSION = "1.14.0";
+export const PLUGIN_VERSION = "1.15.0";
 
 /** Link direto do instalador na release mais recente. */
 export const DOWNLOAD_URL =
@@ -42,9 +42,26 @@ export const HELPER_SHA256 = "__HELPER_SHA256__";
 export const UPDATE_URL =
     "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
 
+/**
+ * Servidores STUN, escolhidos por redundância de operador.
+ *
+ * Dois não bastavam: rede que bloqueia um provedor costuma bloquear todos os
+ * hosts dele, e sem candidato `srflx` o SDP sai só com endereços de rede
+ * local — inúteis fora dela. Operadores diferentes tornam o bloqueio total
+ * bem menos provável.
+ *
+ * O último atende em UDP/80 de propósito: onde o 3478 está filtrado, a porta
+ * de HTTP costuma passar.
+ *
+ * Todos verificados respondendo de rede residencial brasileira. Ficaram de
+ * fora stun.miwifi.com e stun.qq.com, que não responderam.
+ */
 export const ICE_SERVERS: RTCIceServer[] = [
+    { urls: "stun:stun.cloudflare.com:3478" },
     { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun.cloudflare.com:3478" }
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun.nextcloud.com:3478" },
+    { urls: "stun:stun.relay.metered.ca:80" }
 ];
 
 /**

@@ -203,17 +203,21 @@ export class ViewerPeer {
                 this.fail("a transmissão foi encerrada");
             }
 
+            // Sem inspecionar os candidatos ICE não dá para saber a causa:
+            // pode ser NAT dos dois lados, firewall, ou STUN inalcançável.
+            // O texto anterior afirmava CGNAT, e medição em rede residencial
+            // mostrou NAT cone — o palpite estava errado.
             if (pc.connectionState === "failed") {
                 this.fail(
-                    "a conexão P2P falhou — provável NAT simétrico (CGNAT). " +
-                    "Sem TURN não tem como conectar"
+                    "não foi possível abrir a conexão direta com quem transmite. " +
+                    "Costuma ser rede que bloqueia conexão direta, dos dois lados"
                 );
             }
         };
 
         this.connectTimer = setTimeout(
             () => this.fail(
-                "tempo esgotado esperando a conexão — provável NAT simétrico (CGNAT)"
+                "tempo esgotado esperando a conexão com quem transmite"
             ),
             PEER_CONNECT_TIMEOUT_MS
         );
