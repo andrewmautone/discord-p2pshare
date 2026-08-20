@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.17.2
+ * @version 1.17.3
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.17.2";
+var PLUGIN_VERSION = "1.17.3";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
@@ -3256,11 +3256,13 @@ var P2PShare = class {
         scanning = false;
       });
     });
-    let { viewers } = getBroadcastState();
+    let { viewers, active } = getBroadcastState();
     this.cleanupState = onBroadcastStateChange((state) => {
       ui_exports.updateLauncher(state);
       ui_exports.updateVoiceButton(state);
       refreshLive();
+      if (state.active && !active) playStreamStarted();
+      active = state.active;
       if (state.viewers > viewers) playViewerJoined();
       viewers = state.viewers;
     });

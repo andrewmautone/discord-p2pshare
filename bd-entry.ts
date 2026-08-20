@@ -162,12 +162,20 @@ export default class P2PShare {
         });
 
         // Só o transmissor ouve alguém entrando — é ele que precisa saber.
-        let { viewers } = getBroadcastState();
+        let { viewers, active } = getBroadcastState();
 
         this.cleanupState = onBroadcastStateChange(state => {
             ui.updateLauncher(state);
             ui.updateVoiceButton(state);
             refreshLive();
+
+            // O som do início vinha do beacon, e o plugin descarta o próprio
+            // beacon de propósito — quem transmite não é espectador de si
+            // mesmo. Resultado: todo mundo no canal ouvia o começo, menos
+            // quem começou. Aqui é o único lugar que sabe da minha própria
+            // transmissão.
+            if (state.active && !active) playStreamStarted();
+            active = state.active;
 
             if (state.viewers > viewers) playViewerJoined();
             viewers = state.viewers;
