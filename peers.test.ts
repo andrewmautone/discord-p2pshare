@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import { PEER_DROP_GRACE_MS } from "./constants";
 import { BroadcastPeers, ViewerPeer } from "./peers";
 
 /** RTCPeerConnection falsa, suficiente para exercitar a máquina de estados. */
@@ -254,6 +255,78 @@ describe("ViewerPeer", () => {
         viewer.close();
 
         assert.deepEqual(received, [fakeStream]);
+    });
+
+    it("não encerra na hora quando a conexão oscila", async () => {
+        const { transport } = recordingTransport();
+        let created: FakePeer;
+        const viewer = new ViewerPeer(transport, "broadcaster1", {
+            createPeer: () => { created = new FakePeer(); return created as any; }
+        });
+
+        const failures: string[] = [];
+        viewer.onFailed = r => failures.push(r);
+
+        await viewer.start();
+        created!.connectionState = "disconnected";
+        created!.onconnectionstatechange!();
+
+        // `disconnected` é quase sempre passageiro. Desistir aqui encerrava
+        // transmissão que o próprio WebRTC ia restabelecer sozinho.
+        assert.deepEqual(failures, []);
+
+        viewer.close();
+    });
+
+    it("volta ao normal quando a conexão se restabelece", async t => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+
+        const { transport } = recordingTransport();
+        let created: FakePeer;
+        const viewer = new ViewerPeer(transport, "broadcaster1", {
+            createPeer: () => { created = new FakePeer(); return created as any; }
+        });
+
+        const failures: string[] = [];
+        viewer.onFailed = r => failures.push(r);
+
+        await viewer.start();
+
+        created!.connectionState = "disconnected";
+        created!.onconnectionstatechange!();
+
+        created!.connectionState = "connected";
+        created!.onconnectionstatechange!();
+
+        // Passado o prazo de espera, nada deve falhar: a reconexão cancelou a
+        // desistência em vez de apenas adiá-la.
+        t.mock.timers.tick(PEER_DROP_GRACE_MS * 2);
+
+        assert.deepEqual(failures, []);
+        viewer.close();
+    });
+
+    it("desiste quando a queda passa do prazo", async t => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+
+        const { transport } = recordingTransport();
+        let created: FakePeer;
+        const viewer = new ViewerPeer(transport, "broadcaster1", {
+            createPeer: () => { created = new FakePeer(); return created as any; }
+        });
+
+        const failures: string[] = [];
+        viewer.onFailed = r => failures.push(r);
+
+        await viewer.start();
+        created!.connectionState = "disconnected";
+        created!.onconnectionstatechange!();
+
+        t.mock.timers.tick(PEER_DROP_GRACE_MS + 1000);
+
+        assert.equal(failures.length, 1);
+        assert.match(failures[0], /caiu/i);
+        viewer.close();
     });
 
     it("avisa quando a conexão falha, sem afirmar a causa", async () => {

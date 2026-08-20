@@ -6,7 +6,12 @@
 
 import { computePerPeerBitrate } from "./bitrate";
 import type { HandshakeKind } from "./codec";
-import { ICE_GATHER_TIMEOUT_MS, ICE_SERVERS, PEER_CONNECT_TIMEOUT_MS } from "./constants";
+import {
+    ICE_GATHER_TIMEOUT_MS,
+    ICE_SERVERS,
+    PEER_CONNECT_TIMEOUT_MS,
+    PEER_DROP_GRACE_MS
+} from "./constants";
 
 /**
  * Qualidade pedida ao codificador, aplicada em todos os peers.
@@ -168,6 +173,7 @@ export class BroadcastPeers {
 export class ViewerPeer {
     private pc: RTCPeerConnection | null = null;
     private connectTimer: ReturnType<typeof setTimeout> | null = null;
+    private dropTimer: ReturnType<typeof setTimeout> | null = null;
 
     onStream?: (stream: MediaStream) => void;
     onFailed?: (reason: string) => void;
@@ -195,12 +201,26 @@ export class ViewerPeer {
         };
 
         pc.onconnectionstatechange = () => {
-            if (pc.connectionState === "connected") this.clearTimer();
+            if (pc.connectionState === "connected") {
+                this.clearTimer();
+                this.clearDropTimer();
+            }
 
             // O emissor fechou o Discord ou saiu do canal: a conexão morre e
             // não há por que manter uma janela preta aberta.
-            if (pc.connectionState === "closed" || pc.connectionState === "disconnected") {
+            if (pc.connectionState === "closed") {
                 this.fail("a transmissão foi encerrada");
+            }
+
+            // `disconnected` não é fim. É o estado de uma oscilação de rede —
+            // Wi-Fi trocando de canal, um punhado de pacotes perdidos — e o
+            // próprio WebRTC costuma se recuperar em poucos segundos.
+            //
+            // Tratar como encerramento matava transmissão que ia voltar
+            // sozinha, e quem assistia via "a transmissão foi encerrada" sem
+            // nada ter acabado. Agora damos esse tempo antes de desistir.
+            if (pc.connectionState === "disconnected") {
+                this.startDropTimer();
             }
 
             // Sem inspecionar os candidatos ICE não dá para saber a causa:
@@ -236,11 +256,35 @@ export class ViewerPeer {
 
     close(): void {
         this.clearTimer();
+        this.clearDropTimer();
         if (this.pc) {
             this.pc.onconnectionstatechange = null;
             this.pc.close();
             this.pc = null;
         }
+    }
+
+    /**
+     * Espera a conexão voltar antes de dar por encerrada.
+     *
+     * Só desiste se o tempo passar sem reconectar; enquanto isso a janela
+     * segue aberta, com a última imagem congelada — que é melhor que fechar
+     * tudo e obrigar a pessoa a pedir a transmissão de novo.
+     */
+    private startDropTimer(): void {
+        if (this.dropTimer !== null) return;
+
+        this.dropTimer = setTimeout(() => {
+            this.dropTimer = null;
+            this.fail("a conexão caiu e não voltou");
+        }, PEER_DROP_GRACE_MS);
+    }
+
+    private clearDropTimer(): void {
+        if (this.dropTimer === null) return;
+
+        clearTimeout(this.dropTimer);
+        this.dropTimer = null;
     }
 
     private clearTimer(): void {
@@ -252,6 +296,7 @@ export class ViewerPeer {
 
     private fail(reason: string): void {
         this.clearTimer();
+        this.clearDropTimer();
         this.onFailed?.(reason);
     }
 }

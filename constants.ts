@@ -9,7 +9,7 @@ export const PROTOCOL_VERSION = 1;
 export const PLUGIN_URL = "https://github.com/andrewmautone/discord-p2pshare";
 
 /** Versão publicada. O build do BetterDiscord escreve isto no cabeçalho. */
-export const PLUGIN_VERSION = "1.18.1";
+export const PLUGIN_VERSION = "1.19.0";
 
 /** Link direto do instalador na release mais recente. */
 export const DOWNLOAD_URL =
@@ -95,4 +95,14 @@ export const DEFAULT_BUDGET_MBPS = 15;
 
 export const ICE_GATHER_TIMEOUT_MS = 4_000;
 export const PEER_CONNECT_TIMEOUT_MS = 30_000;
+
+/**
+ * Quanto esperar uma conexão caída voltar antes de dar por encerrada.
+ *
+ * `disconnected` no WebRTC é quase sempre passageiro: o próprio ICE refaz o
+ * caminho em poucos segundos. Desistir na hora encerrava transmissão que ia
+ * voltar sozinha; esperar demais deixa a pessoa olhando imagem congelada sem
+ * saber que acabou.
+ */
+export const PEER_DROP_GRACE_MS = 12_000;
 export const HANDSHAKE_TTL_MS = 20_000;

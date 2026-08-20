@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.18.1
+ * @version 1.19.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.18.1";
+var PLUGIN_VERSION = "1.19.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
@@ -150,6 +150,7 @@ var MAX_BITRATE = 8e6;
 var DEFAULT_BUDGET_MBPS = 15;
 var ICE_GATHER_TIMEOUT_MS = 4e3;
 var PEER_CONNECT_TIMEOUT_MS = 3e4;
+var PEER_DROP_GRACE_MS = 12e3;
 var HANDSHAKE_TTL_MS = 2e4;
 
 // codec.ts
@@ -2384,6 +2385,7 @@ var ViewerPeer = class {
   opts;
   pc = null;
   connectTimer = null;
+  dropTimer = null;
   onStream;
   onFailed;
   async start() {
@@ -2399,9 +2401,15 @@ var ViewerPeer = class {
       }
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "connected") this.clearTimer();
-      if (pc.connectionState === "closed" || pc.connectionState === "disconnected") {
+      if (pc.connectionState === "connected") {
+        this.clearTimer();
+        this.clearDropTimer();
+      }
+      if (pc.connectionState === "closed") {
         this.fail("a transmiss\xE3o foi encerrada");
+      }
+      if (pc.connectionState === "disconnected") {
+        this.startDropTimer();
       }
       if (pc.connectionState === "failed") {
         this.fail(
@@ -2426,11 +2434,31 @@ var ViewerPeer = class {
   }
   close() {
     this.clearTimer();
+    this.clearDropTimer();
     if (this.pc) {
       this.pc.onconnectionstatechange = null;
       this.pc.close();
       this.pc = null;
     }
+  }
+  /**
+   * Espera a conexão voltar antes de dar por encerrada.
+   *
+   * Só desiste se o tempo passar sem reconectar; enquanto isso a janela
+   * segue aberta, com a última imagem congelada — que é melhor que fechar
+   * tudo e obrigar a pessoa a pedir a transmissão de novo.
+   */
+  startDropTimer() {
+    if (this.dropTimer !== null) return;
+    this.dropTimer = setTimeout(() => {
+      this.dropTimer = null;
+      this.fail("a conex\xE3o caiu e n\xE3o voltou");
+    }, PEER_DROP_GRACE_MS);
+  }
+  clearDropTimer() {
+    if (this.dropTimer === null) return;
+    clearTimeout(this.dropTimer);
+    this.dropTimer = null;
   }
   clearTimer() {
     if (this.connectTimer) {
@@ -2440,6 +2468,7 @@ var ViewerPeer = class {
   }
   fail(reason) {
     this.clearTimer();
+    this.clearDropTimer();
     this.onFailed?.(reason);
   }
 };
