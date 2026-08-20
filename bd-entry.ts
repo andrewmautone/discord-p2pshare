@@ -6,6 +6,7 @@
 
 import {
     getBroadcastState,
+    getCurrentBitrate,
     getQuality,
     onBroadcastStateChange,
     setQuality,
@@ -75,7 +76,8 @@ export default class P2PShare {
             ui.openBroadcastMenu(anchor, {
                 quality: getQuality(),
                 onQuality: q => setQuality(q),
-                onStop: () => { void stopBroadcast(); }
+                onStop: () => { void stopBroadcast(); },
+                currentBitrate: getCurrentBitrate
             });
         };
 

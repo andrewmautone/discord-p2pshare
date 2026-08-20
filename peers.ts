@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { computePerPeerBitrate } from "./bitrate";
+import { computePerPeerBitrate, smoothBudgetMbps, usableBudgetMbps } from "./bitrate";
 import type { HandshakeKind } from "./codec";
 import {
     ICE_GATHER_TIMEOUT_MS,
@@ -63,18 +63,101 @@ export function waitForIceGathering(
 export class BroadcastPeers {
     private readonly peers = new Map<string, RTCPeerConnection>();
     private readonly createPeer: PeerFactory;
-    private readonly budgetMbps: number;
+    private budgetMbps: number;
+    private auto: boolean;
 
     onCountChange?: (count: number) => void;
     private quality: BroadcastQuality = {};
 
+    /**
+     * Banda medida pelo proprio WebRTC, ou null enquanto ninguem mediu.
+     *
+     * Fica separada do orcamento escolhido para que sair do automatico nao
+     * apague a medicao — voltar para o automatico reaproveita o que ja' se
+     * sabe da rede, em vez de recomecar do zero.
+     */
+    private measuredMbps: number | null = null;
+    private statsTimer: ReturnType<typeof setInterval> | null = null;
+
+    /** Avisa a interface quanto esta sendo enviado para cada espectador. */
+    onBitrateChange?: (perPeerBps: number, budgetMbps: number, medido: boolean) => void;
+
     constructor(
         private readonly stream: MediaStream,
         private readonly transport: PeerTransport,
-        opts: { budgetMbps: number; createPeer?: PeerFactory; }
+        opts: { budgetMbps: number; createPeer?: PeerFactory; auto?: boolean; }
     ) {
         this.budgetMbps = opts.budgetMbps;
+        this.auto = opts.auto ?? true;
         this.createPeer = opts.createPeer ?? defaultFactory;
+    }
+
+    /**
+     * Orcamento escolhido na mao, ou automatico quando null.
+     *
+     * No automatico o valor sai da medicao; sem medicao ainda, do orcamento
+     * configurado — melhor um palpite razoavel que travar em nada.
+     */
+    setBudget(mbps: number | null): void {
+        this.auto = mbps === null;
+        if (mbps !== null) this.budgetMbps = mbps;
+        this.applyBitrate();
+    }
+
+    get autoBudget(): boolean {
+        return this.auto;
+    }
+
+    /** Orcamento em vigor agora, medido ou escolhido. */
+    get effectiveBudgetMbps(): number {
+        return this.auto && this.measuredMbps !== null
+            ? this.measuredMbps
+            : this.budgetMbps;
+    }
+
+    /**
+     * Pergunta a cada conexao quanto ela acha que cabe no cano de saida.
+     *
+     * `availableOutgoingBitrate` e' a estimativa do proprio WebRTC para o par
+     * de candidatos em uso. E' o unico numero honesto sobre a rede: qualquer
+     * outro seria chute sobre o plano contratado.
+     */
+    private async sampleBandwidth(): Promise<void> {
+        const amostras: number[] = [];
+
+        for (const pc of this.peers.values()) {
+            try {
+                const stats = await pc.getStats();
+                stats.forEach((report: any) => {
+                    if (report.type === "candidate-pair" && report.availableOutgoingBitrate) {
+                        amostras.push(report.availableOutgoingBitrate / 1_000_000);
+                    }
+                });
+            } catch { /* conexao morrendo: a proxima amostra resolve */ }
+        }
+
+        const util = usableBudgetMbps(amostras);
+        if (util === null) return;
+
+        this.measuredMbps = smoothBudgetMbps(this.measuredMbps, util);
+        if (this.auto) this.applyBitrate();
+    }
+
+    private startSampling(): void {
+        if (this.statsTimer !== null) return;
+
+        this.statsTimer = setInterval(() => void this.sampleBandwidth(), 3000);
+
+        // Medir banda nao e' motivo para manter um processo vivo. No
+        // navegador nao existe e nao faz falta; em teste, sem isto a suite
+        // nunca termina — foi assim que este esquecimento apareceu.
+        (this.statsTimer as any)?.unref?.();
+    }
+
+    private stopSampling(): void {
+        if (this.statsTimer === null) return;
+        clearInterval(this.statsTimer);
+        this.statsTimer = null;
     }
 
     get viewerCount(): number {
@@ -109,6 +192,9 @@ export class BroadcastPeers {
         await waitForIceGathering(pc);
 
         this.applyBitrate();
+        // Sem ninguem conectado nao ha o que medir: o cano so' revela a
+        // largura quando esta' passando alguma coisa por ele.
+        this.startSampling();
         this.onCountChange?.(this.peers.size);
 
         await this.transport.send("answer", fromUserId, pc.localDescription?.sdp ?? answer.sdp!);
@@ -140,12 +226,16 @@ export class BroadcastPeers {
             pc.close();
         }
         this.peers.clear();
+        this.stopSampling();
         this.onCountChange?.(0);
     }
 
     /** Redistribui o orçamento de upload entre todos os viewers atuais. */
     private applyBitrate(): void {
-        const maxBitrate = computePerPeerBitrate(this.budgetMbps, this.peers.size);
+        const budget = this.effectiveBudgetMbps;
+        const maxBitrate = computePerPeerBitrate(budget, this.peers.size);
+
+        this.onBitrateChange?.(maxBitrate, budget, this.auto && this.measuredMbps !== null);
 
         for (const pc of this.peers.values()) {
             for (const sender of pc.getSenders()) {

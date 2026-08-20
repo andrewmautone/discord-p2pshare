@@ -29,9 +29,20 @@ export interface QualityChoice {
     maxHeight: number | null;
     /** Quadros por segundo; null deixa o navegador decidir. */
     maxFramerate: number | null;
+    /**
+     * Orçamento de upload em Mb/s, repartido entre os espectadores.
+     *
+     * null significa automático: o valor sai da banda que o próprio WebRTC
+     * mede, em vez de um número fixo que não sabe nada da rede de hoje.
+     */
+    budgetMbps: number | null;
 }
 
-const DEFAULT_QUALITY: QualityChoice = { maxHeight: null, maxFramerate: null };
+const DEFAULT_QUALITY: QualityChoice = {
+    maxHeight: null,
+    maxFramerate: null,
+    budgetMbps: null
+};
 
 export interface BroadcastState {
     active: boolean;
@@ -40,6 +51,18 @@ export interface BroadcastState {
 
 let session: Session | null = null;
 let quality: QualityChoice = { ...DEFAULT_QUALITY };
+
+/**
+ * Ultimo bitrate aplicado, para a interface poder mostrar.
+ *
+ * Guardado aqui e' o unico jeito de o menu dizer "Auto (4,2 Mb/s)" sem
+ * perguntar ao WebRTC a cada repintura.
+ */
+let currentBitrate: { perPeerBps: number; budgetMbps: number; medido: boolean; } | null = null;
+
+export function getCurrentBitrate(): typeof currentBitrate {
+    return currentBitrate;
+}
 const listeners = new Set<(state: BroadcastState) => void>();
 
 /** Chave da prévia local, separada das sessões que estamos assistindo. */
@@ -96,6 +119,7 @@ export function setQuality(choice: QualityChoice): void {
     };
 
     session.peers.setQuality(encoding);
+    session.peers.setBudget(choice.budgetMbps);
 
     // Também pede à captura: baixar o fps na origem poupa CPU de quem
     // transmite, coisa que mexer só no codificador não faz.
@@ -156,8 +180,14 @@ export async function startBroadcast(): Promise<void> {
     };
 
     const peers = new BroadcastPeers(stream, transport, {
-        budgetMbps: host.getBudgetMbps()
+        // Ate' a medicao existir, o orcamento configurado e' o palpite.
+        budgetMbps: quality.budgetMbps ?? host.getBudgetMbps(),
+        auto: quality.budgetMbps === null
     });
+
+    peers.onBitrateChange = (perPeerBps, budgetMbps, medido) => {
+        currentBitrate = { perPeerBps, budgetMbps, medido };
+    };
 
     peers.onCountChange = () => {
         host.setOverlayViewers(

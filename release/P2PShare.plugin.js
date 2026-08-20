@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.19.0
+ * @version 1.20.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.19.0";
+var PLUGIN_VERSION = "1.20.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
@@ -822,6 +822,29 @@ __export(ui_exports, {
   updateLauncher: () => updateLauncher,
   updateVoiceButton: () => updateVoiceButton
 });
+
+// bitrate.ts
+function computePerPeerBitrate(budgetMbps, viewerCount) {
+  if (viewerCount <= 0) return MAX_BITRATE;
+  const perPeer = budgetMbps * 1e6 / viewerCount;
+  return Math.round(Math.min(MAX_BITRATE, Math.max(MIN_BITRATE, perPeer)));
+}
+function smoothBudgetMbps(previous, sampleMbps) {
+  if (!Number.isFinite(sampleMbps) || sampleMbps <= 0) return previous ?? 0;
+  if (previous === null || previous <= 0) return sampleMbps;
+  const peso = sampleMbps < previous ? 0.6 : 0.2;
+  return previous + (sampleMbps - previous) * peso;
+}
+function usableBudgetMbps(samplesMbps) {
+  const validos = samplesMbps.filter((v) => Number.isFinite(v) && v > 0);
+  if (!validos.length) return null;
+  return Math.max(...validos);
+}
+function formatMbps(bps) {
+  return `${(bps / 1e6).toFixed(1).replace(".", ",")} Mb/s`;
+}
+
+// host/bd/ui.ts
 var CSS = `
 .p2ps-launcher {
     position: fixed;
@@ -1744,6 +1767,14 @@ var FRAMERATES = [
   { label: "30 fps", value: 30 },
   { label: "15 fps", value: 15 }
 ];
+var BITRATES = [
+  { label: "Autom\xE1tico", value: null },
+  { label: "20 Mb/s", value: 20 },
+  { label: "15 Mb/s", value: 15 },
+  { label: "10 Mb/s", value: 10 },
+  { label: "6 Mb/s", value: 6 },
+  { label: "3 Mb/s", value: 3 }
+];
 var openMenu = null;
 function closeBroadcastMenu() {
   openMenu?.remove();
@@ -1754,7 +1785,8 @@ function openBroadcastMenu(anchor, opts) {
   const menu = document.createElement("div");
   menu.className = "p2ps-menu";
   const current = { ...opts.quality };
-  const addSubmenu = (title, options, selected, apply) => {
+  const repaints = [];
+  const addSubmenu = (title, options, selected, apply, format) => {
     const item = document.createElement("div");
     item.className = "p2ps-menu-item p2ps-menu-parent";
     const label = document.createElement("span");
@@ -1762,9 +1794,10 @@ function openBroadcastMenu(anchor, opts) {
     const value = document.createElement("span");
     value.className = "p2ps-menu-value";
     const paintValue = () => {
-      value.textContent = (options.find((o) => o.value === selected())?.label ?? "\u2014") + "  \u203A";
+      value.textContent = (format ? format() : options.find((o) => o.value === selected())?.label ?? "\u2014") + "  \u203A";
     };
     paintValue();
+    repaints.push(paintValue);
     item.append(label, value);
     const sub = document.createElement("div");
     sub.className = "p2ps-submenu";
@@ -1807,6 +1840,29 @@ function openBroadcastMenu(anchor, opts) {
       current.maxFramerate = v;
     }
   );
+  addSubmenu(
+    "Bitrate",
+    BITRATES,
+    () => current.budgetMbps,
+    (v) => {
+      current.budgetMbps = v;
+    },
+    () => {
+      const escolhido = BITRATES.find((o) => o.value === current.budgetMbps);
+      if (current.budgetMbps !== null) return escolhido?.label ?? "\u2014";
+      const atual = opts.currentBitrate?.();
+      return atual ? `Autom\xE1tico \xB7 ${formatMbps(atual.perPeerBps)}` : "Autom\xE1tico";
+    }
+  );
+  if (opts.currentBitrate) {
+    const timer = setInterval(() => {
+      if (!menu.isConnected) {
+        clearInterval(timer);
+        return;
+      }
+      for (const paint of repaints) paint();
+    }, 1e3);
+  }
   const sep = document.createElement("div");
   sep.className = "p2ps-menu-sep";
   menu.appendChild(sep);
@@ -2270,13 +2326,6 @@ var host = {
   revokeBeacon
 };
 
-// bitrate.ts
-function computePerPeerBitrate(budgetMbps, viewerCount) {
-  if (viewerCount <= 0) return MAX_BITRATE;
-  const perPeer = budgetMbps * 1e6 / viewerCount;
-  return Math.round(Math.min(MAX_BITRATE, Math.max(MIN_BITRATE, perPeer)));
-}
-
 // peers.ts
 var defaultFactory = (config) => new RTCPeerConnection(config);
 var PEER_CONFIG = { iceServers: ICE_SERVERS };
@@ -2299,6 +2348,7 @@ var BroadcastPeers = class {
     this.stream = stream;
     this.transport = transport;
     this.budgetMbps = opts.budgetMbps;
+    this.auto = opts.auto ?? true;
     this.createPeer = opts.createPeer ?? defaultFactory;
   }
   stream;
@@ -2306,8 +2356,73 @@ var BroadcastPeers = class {
   peers = /* @__PURE__ */ new Map();
   createPeer;
   budgetMbps;
+  auto;
   onCountChange;
   quality = {};
+  /**
+   * Banda medida pelo proprio WebRTC, ou null enquanto ninguem mediu.
+   *
+   * Fica separada do orcamento escolhido para que sair do automatico nao
+   * apague a medicao — voltar para o automatico reaproveita o que ja' se
+   * sabe da rede, em vez de recomecar do zero.
+   */
+  measuredMbps = null;
+  statsTimer = null;
+  /** Avisa a interface quanto esta sendo enviado para cada espectador. */
+  onBitrateChange;
+  /**
+   * Orcamento escolhido na mao, ou automatico quando null.
+   *
+   * No automatico o valor sai da medicao; sem medicao ainda, do orcamento
+   * configurado — melhor um palpite razoavel que travar em nada.
+   */
+  setBudget(mbps) {
+    this.auto = mbps === null;
+    if (mbps !== null) this.budgetMbps = mbps;
+    this.applyBitrate();
+  }
+  get autoBudget() {
+    return this.auto;
+  }
+  /** Orcamento em vigor agora, medido ou escolhido. */
+  get effectiveBudgetMbps() {
+    return this.auto && this.measuredMbps !== null ? this.measuredMbps : this.budgetMbps;
+  }
+  /**
+   * Pergunta a cada conexao quanto ela acha que cabe no cano de saida.
+   *
+   * `availableOutgoingBitrate` e' a estimativa do proprio WebRTC para o par
+   * de candidatos em uso. E' o unico numero honesto sobre a rede: qualquer
+   * outro seria chute sobre o plano contratado.
+   */
+  async sampleBandwidth() {
+    const amostras = [];
+    for (const pc of this.peers.values()) {
+      try {
+        const stats = await pc.getStats();
+        stats.forEach((report) => {
+          if (report.type === "candidate-pair" && report.availableOutgoingBitrate) {
+            amostras.push(report.availableOutgoingBitrate / 1e6);
+          }
+        });
+      } catch {
+      }
+    }
+    const util = usableBudgetMbps(amostras);
+    if (util === null) return;
+    this.measuredMbps = smoothBudgetMbps(this.measuredMbps, util);
+    if (this.auto) this.applyBitrate();
+  }
+  startSampling() {
+    if (this.statsTimer !== null) return;
+    this.statsTimer = setInterval(() => void this.sampleBandwidth(), 3e3);
+    this.statsTimer?.unref?.();
+  }
+  stopSampling() {
+    if (this.statsTimer === null) return;
+    clearInterval(this.statsTimer);
+    this.statsTimer = null;
+  }
   get viewerCount() {
     return this.peers.size;
   }
@@ -2332,6 +2447,7 @@ var BroadcastPeers = class {
     await pc.setLocalDescription(answer);
     await waitForIceGathering(pc);
     this.applyBitrate();
+    this.startSampling();
     this.onCountChange?.(this.peers.size);
     await this.transport.send("answer", fromUserId, pc.localDescription?.sdp ?? answer.sdp);
   }
@@ -2355,11 +2471,14 @@ var BroadcastPeers = class {
       pc.close();
     }
     this.peers.clear();
+    this.stopSampling();
     this.onCountChange?.(0);
   }
   /** Redistribui o orçamento de upload entre todos os viewers atuais. */
   applyBitrate() {
-    const maxBitrate = computePerPeerBitrate(this.budgetMbps, this.peers.size);
+    const budget = this.effectiveBudgetMbps;
+    const maxBitrate = computePerPeerBitrate(budget, this.peers.size);
+    this.onBitrateChange?.(maxBitrate, budget, this.auto && this.measuredMbps !== null);
     for (const pc of this.peers.values()) {
       for (const sender of pc.getSenders()) {
         if (!sender.track) continue;
@@ -2627,9 +2746,17 @@ function observeSignals(handlers) {
 }
 
 // broadcast.ts
-var DEFAULT_QUALITY = { maxHeight: null, maxFramerate: null };
+var DEFAULT_QUALITY = {
+  maxHeight: null,
+  maxFramerate: null,
+  budgetMbps: null
+};
 var session = null;
 var quality = { ...DEFAULT_QUALITY };
+var currentBitrate = null;
+function getCurrentBitrate() {
+  return currentBitrate;
+}
 var listeners = /* @__PURE__ */ new Set();
 function selfPreviewKey(sessionId) {
   return `self:${sessionId}`;
@@ -2665,6 +2792,7 @@ function setQuality(choice) {
     scaleResolutionDownBy: choice.maxHeight && sourceHeight && sourceHeight > choice.maxHeight ? sourceHeight / choice.maxHeight : 1
   };
   session.peers.setQuality(encoding);
+  session.peers.setBudget(choice.budgetMbps);
   if (track && choice.maxFramerate) {
     track.applyConstraints({ frameRate: { max: choice.maxFramerate } }).catch((err) => console.warn("[P2PShare] a captura recusou o fps pedido", err));
   }
@@ -2707,8 +2835,13 @@ async function startBroadcast() {
     send: (kind, targetUserId, sdp) => sendHandshake(channelId, sessionId, kind, targetUserId, sdp)
   };
   const peers = new BroadcastPeers(stream, transport, {
-    budgetMbps: host.getBudgetMbps()
+    // Ate' a medicao existir, o orcamento configurado e' o palpite.
+    budgetMbps: quality.budgetMbps ?? host.getBudgetMbps(),
+    auto: quality.budgetMbps === null
   });
+  peers.onBitrateChange = (perPeerBps, budgetMbps, medido) => {
+    currentBitrate = { perPeerBps, budgetMbps, medido };
+  };
   peers.onCountChange = () => {
     host.setOverlayViewers(
       selfPreviewKey(sessionId),
@@ -3242,7 +3375,8 @@ var P2PShare = class {
         onQuality: (q) => setQuality(q),
         onStop: () => {
           void stopBroadcast();
-        }
+        },
+        currentBitrate: getCurrentBitrate
       });
     };
     this.cleanupWatcher = initWatcher();

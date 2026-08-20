@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { formatMbps } from "../../bitrate";
 import type { CaptureChoice, CaptureSource } from "../../capture";
 import { helperReady } from "./audioHelper";
 
@@ -1273,6 +1274,8 @@ export function setLiveUsers(users: LiveUser[]): void {
 export interface QualityChoice {
     maxHeight: number | null;
     maxFramerate: number | null;
+    /** Orçamento de upload em Mb/s; null é automático. */
+    budgetMbps: number | null;
 }
 
 const RESOLUTIONS: { label: string; value: number | null; }[] = [
@@ -1288,6 +1291,22 @@ const FRAMERATES: { label: string; value: number | null; }[] = [
     { label: "60 fps", value: 60 },
     { label: "30 fps", value: 30 },
     { label: "15 fps", value: 15 }
+];
+
+/**
+ * Orçamento total de upload, repartido entre os espectadores.
+ *
+ * São totais, não valor por pessoa: com quatro assistindo, 10 Mb/s viram
+ * 2,5 para cada. Misturar as duas unidades na mesma lista faria o número do
+ * menu significar coisas diferentes conforme a sala enchesse.
+ */
+const BITRATES: { label: string; value: number | null; }[] = [
+    { label: "Automático", value: null },
+    { label: "20 Mb/s", value: 20 },
+    { label: "15 Mb/s", value: 15 },
+    { label: "10 Mb/s", value: 10 },
+    { label: "6 Mb/s", value: 6 },
+    { label: "3 Mb/s", value: 3 }
 ];
 
 let openMenu: HTMLElement | null = null;
@@ -1307,6 +1326,8 @@ export function openBroadcastMenu(anchor: HTMLElement, opts: {
     quality: QualityChoice;
     onQuality: (quality: QualityChoice) => void;
     onStop: () => void;
+    /** Bitrate em vigor, para o rótulo do automático acompanhar a rede. */
+    currentBitrate?: () => { perPeerBps: number; medido: boolean; } | null;
 }): void {
     closeBroadcastMenu();
 
@@ -1315,11 +1336,14 @@ export function openBroadcastMenu(anchor: HTMLElement, opts: {
 
     const current = { ...opts.quality };
 
+    const repaints: (() => void)[] = [];
+
     const addSubmenu = (
         title: string,
         options: { label: string; value: number | null; }[],
         selected: () => number | null,
-        apply: (value: number | null) => void
+        apply: (value: number | null) => void,
+        format?: () => string
     ) => {
         const item = document.createElement("div");
         item.className = "p2ps-menu-item p2ps-menu-parent";
@@ -1330,10 +1354,12 @@ export function openBroadcastMenu(anchor: HTMLElement, opts: {
         const value = document.createElement("span");
         value.className = "p2ps-menu-value";
         const paintValue = () => {
-            value.textContent =
-                (options.find(o => o.value === selected())?.label ?? "—") + "  ›";
+            value.textContent = (format
+                ? format()
+                : options.find(o => o.value === selected())?.label ?? "—") + "  ›";
         };
         paintValue();
+        repaints.push(paintValue);
 
         item.append(label, value);
 
@@ -1375,6 +1401,34 @@ export function openBroadcastMenu(anchor: HTMLElement, opts: {
     addSubmenu("Taxa de quadros", FRAMERATES,
         () => current.maxFramerate,
         v => { current.maxFramerate = v; });
+
+    // No automático o rótulo mostra o que está sendo enviado de fato: sem
+    // isso "Automático" não diria nada, e a pergunta seguinte seria sempre
+    // "automático em quanto?".
+    addSubmenu("Bitrate", BITRATES,
+        () => current.budgetMbps,
+        v => { current.budgetMbps = v; },
+        () => {
+            const escolhido = BITRATES.find(o => o.value === current.budgetMbps);
+            if (current.budgetMbps !== null) return escolhido?.label ?? "—";
+
+            const atual = opts.currentBitrate?.();
+            return atual
+                ? `Automático · ${formatMbps(atual.perPeerBps)}`
+                : "Automático";
+        });
+
+    // A banda medida muda sozinha; sem repintar, o rótulo do automático
+    // mostraria o valor do instante em que o menu abriu.
+    if (opts.currentBitrate) {
+        const timer = setInterval(() => {
+            if (!menu.isConnected) {
+                clearInterval(timer);
+                return;
+            }
+            for (const paint of repaints) paint();
+        }, 1000);
+    }
 
     const sep = document.createElement("div");
     sep.className = "p2ps-menu-sep";
