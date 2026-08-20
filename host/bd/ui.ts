@@ -785,10 +785,33 @@ let lastDumpKey = "";
 export function dumpVoiceDiagnostics(): void {
     try {
         const sites = collectSites();
+        // Onde cada sessao esta agora: no quadro, solta em janela, ou em
+        // lugar nenhum. E' o que separa "a janela fechou e nao devolveu" de
+        // "devolveu, mas nao havia quadro para receber".
+        const video = {
+            noQuadro: [...tileSessions.keys()],
+            emJanela: [...poppedOut.keys()],
+            sobreposicoes: [...overlays.keys()],
+            porSessao: [...tileSessions].map(([id, sess]) => {
+                const quadros = tilesOf(sess.userId);
+                return {
+                    sessao: id,
+                    usuario: sess.userId,
+                    quadrosAchados: quadros.length,
+                    comVideo: quadros.filter(t => t.querySelector(".p2ps-tile-video")).length,
+                    trilhasVivas: sess.stream.getVideoTracks()
+                        .filter(t => t.readyState === "live").length
+                };
+            }),
+            videosNoDom: document.querySelectorAll(".p2ps-tile-video").length
+        };
+
         const key = sites.map(s => s.host.className).join("|") + "#" + voiceBtns.size
             // Sem a parte do selo, mudanca so' na barra lateral nunca gravaria.
             + "#" + sidebarDiag.estrategiaEscolhida
-            + ":" + sidebarDiag.linhas + ":" + sidebarDiag.selosAtivos;
+            + ":" + sidebarDiag.linhas + ":" + sidebarDiag.selosAtivos
+            // Sem isto, o estado do video mudaria sem nunca ser gravado.
+            + "#" + JSON.stringify(video);
         if (key === lastDumpKey) return;
         lastDumpKey = key;
 
@@ -811,7 +834,8 @@ export function dumpVoiceDiagnostics(): void {
             seloBarraLateral: {
                 ...sidebarDiag,
                 transmitindo: liveUsers.length
-            }
+            },
+            video
         };
 
         const fs = require("fs");
@@ -1787,16 +1811,12 @@ function mountFloatingOverlay(
     const closeBtn = el.querySelector('[data-act="close"]') as HTMLButtonElement;
 
     if (opts.onDock) {
-        // Fechar devolve ao quadro; encerrar de vez fica num botao proprio.
+        // Fechar devolve ao quadro. Nao ha botao de encerrar aqui: parar de
+        // assistir e' o X do quadro, e dois botoes parecidos lado a lado, um
+        // que devolve e outro que encerra, so' criam a chance de errar o
+        // clique e perder a transmissao sem querer.
         closeBtn.title = "Voltar para o quadro";
         closeBtn.addEventListener("click", opts.onDock);
-
-        const stop = document.createElement("button");
-        stop.type = "button";
-        stop.textContent = "⏹";
-        stop.title = `Parar de assistir ${title}`;
-        stop.addEventListener("click", onClose);
-        closeBtn.insertAdjacentElement("beforebegin", stop);
     } else {
         closeBtn.title = opts.closeLabel ?? "Fechar";
         closeBtn.addEventListener("click", onClose);

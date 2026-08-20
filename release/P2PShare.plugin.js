@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.18.0
+ * @version 1.18.1
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.18.0";
+var PLUGIN_VERSION = "1.18.1";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
@@ -1449,7 +1449,23 @@ var lastDumpKey = "";
 function dumpVoiceDiagnostics() {
   try {
     const sites = collectSites();
-    const key = sites.map((s) => s.host.className).join("|") + "#" + voiceBtns.size + "#" + sidebarDiag.estrategiaEscolhida + ":" + sidebarDiag.linhas + ":" + sidebarDiag.selosAtivos;
+    const video = {
+      noQuadro: [...tileSessions.keys()],
+      emJanela: [...poppedOut.keys()],
+      sobreposicoes: [...overlays.keys()],
+      porSessao: [...tileSessions].map(([id, sess]) => {
+        const quadros = tilesOf(sess.userId);
+        return {
+          sessao: id,
+          usuario: sess.userId,
+          quadrosAchados: quadros.length,
+          comVideo: quadros.filter((t) => t.querySelector(".p2ps-tile-video")).length,
+          trilhasVivas: sess.stream.getVideoTracks().filter((t) => t.readyState === "live").length
+        };
+      }),
+      videosNoDom: document.querySelectorAll(".p2ps-tile-video").length
+    };
+    const key = sites.map((s) => s.host.className).join("|") + "#" + voiceBtns.size + "#" + sidebarDiag.estrategiaEscolhida + ":" + sidebarDiag.linhas + ":" + sidebarDiag.selosAtivos + "#" + JSON.stringify(video);
     if (key === lastDumpKey) return;
     lastDumpKey = key;
     const data = {
@@ -1469,7 +1485,8 @@ function dumpVoiceDiagnostics() {
       seloBarraLateral: {
         ...sidebarDiag,
         transmitindo: liveUsers.length
-      }
+      },
+      video
     };
     const fs = require("fs");
     const path = require("path");
@@ -2106,12 +2123,6 @@ function mountFloatingOverlay(sessionId, stream, title, onClose, opts = {}) {
   if (opts.onDock) {
     closeBtn.title = "Voltar para o quadro";
     closeBtn.addEventListener("click", opts.onDock);
-    const stop = document.createElement("button");
-    stop.type = "button";
-    stop.textContent = "\u23F9";
-    stop.title = `Parar de assistir ${title}`;
-    stop.addEventListener("click", onClose);
-    closeBtn.insertAdjacentElement("beforebegin", stop);
   } else {
     closeBtn.title = opts.closeLabel ?? "Fechar";
     closeBtn.addEventListener("click", onClose);
