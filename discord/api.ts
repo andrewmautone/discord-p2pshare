@@ -7,7 +7,7 @@
 import type { CloudUpload as TCloudUpload } from "@vencord/discord-types";
 import { CloudUploadPlatform } from "@vencord/discord-types/enums";
 import { findLazy } from "@webpack";
-import { Constants, RestAPI, SelectedChannelStore, SnowflakeUtils, UserStore } from "@webpack/common";
+import { Constants, MessageStore, RestAPI, SelectedChannelStore, SnowflakeUtils, UserStore } from "@webpack/common";
 
 const CloudUpload: typeof TCloudUpload = findLazy(m => m.prototype?.trackUploadFinished);
 
@@ -136,6 +136,72 @@ export function uploadTextAttachment(
 
         upload.upload();
     });
+}
+
+/** Quantas mensagens olhar para trás ao varrer um canal. */
+const HISTORY_LIMIT = 50;
+
+/**
+ * Mensagens recentes do canal, da mais nova para a mais antiga.
+ *
+ * Tenta primeiro o cache do Discord, instantâneo e sem custo de rede; só
+ * busca de verdade quando o canal ainda não foi carregado. Nunca propaga
+ * erro: a varredura é um extra sobre a descoberta ao vivo.
+ */
+export async function fetchRecentMessages(
+    channelId: string,
+    limit: number = HISTORY_LIMIT
+): Promise<DiscordMessage[]> {
+    try {
+        const cache = MessageStore.getMessages(channelId) as any;
+
+        if (cache?.ready !== false) {
+            // O cache guarda da mais antiga para a mais nova; invertemos para
+            // que as duas estratégias entreguem a mesma ordem.
+            const list: any[] = Array.isArray(cache?._array)
+                ? cache._array
+                : typeof cache?.toArray === "function" ? cache.toArray() ?? [] : [];
+
+            const normalized = normalizeMessages(list.slice(-limit).reverse(), channelId);
+            if (normalized.length > 0) return normalized;
+        }
+    } catch (err) {
+        console.warn("[P2PShare] cache de mensagens indisponível", err);
+    }
+
+    try {
+        const res = await RestAPI.get({
+            url: `${Constants.Endpoints.MESSAGES(channelId)}?limit=${limit}`
+        });
+
+        return normalizeMessages(res?.body, channelId).slice(0, limit);
+    } catch (err) {
+        console.warn("[P2PShare] não deu para buscar o histórico do canal", err);
+        return [];
+    }
+}
+
+function normalizeMessages(raw: any, channelId: string): DiscordMessage[] {
+    if (!Array.isArray(raw)) return [];
+
+    const out: DiscordMessage[] = [];
+
+    for (const m of raw) {
+        if (typeof m?.id !== "string" || typeof m?.content !== "string") continue;
+        if (typeof m?.author?.id !== "string") continue;
+
+        out.push({
+            id: m.id,
+            // Registro de cache nem sempre carrega o canal; sem ele o
+            // handshake sairia sem destino, então o canal pedido é a verdade.
+            channel_id: m.channel_id ?? m.channelId ?? channelId,
+            content: m.content,
+            author: { id: m.author.id, username: m.author.username ?? m.author.id },
+            attachments: Array.isArray(m.attachments) ? m.attachments : []
+        });
+    }
+
+    return out;
 }
 
 export async function fetchAttachmentText(url: string): Promise<string> {

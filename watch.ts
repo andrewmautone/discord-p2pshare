@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { selectBeacons } from "./beacon";
 import { host } from "./host";
 import { type PeerTransport, ViewerPeer } from "./peers";
 import { type Beacon, observeSignals, sendHandshake } from "./signaling";
@@ -12,6 +13,34 @@ import { type Beacon, observeSignals, sendHandshake } from "./signaling";
 const beacons = new Map<string, Beacon>();
 /** Sessões que estou assistindo, por sessionId. */
 const watching = new Map<string, ViewerPeer>();
+/**
+ * messageIds de beacons que se provaram mortos — a conexão com quem transmite
+ * não abriu. A mensagem continua no histórico (o Discord de quem transmitia
+ * fechou à força e nunca a apagou), então sem esta lista toda varredura do
+ * canal ressuscitaria o mesmo aviso, prometendo uma transmissão que não existe.
+ *
+ * Uma transmissão nova posta uma mensagem nova, com id novo: quem recomeça
+ * volta a ser anunciado normalmente.
+ *
+ * O registro expira porque a falha pode ter sido passageira — a rede oscilou,
+ * o outro lado estava trocando de janela. Enterrar a transmissão até o fim da
+ * sessão esconderia algo que continua no ar, e a pessoa não teria como pedir
+ * de novo.
+ */
+const deadBeacons = new Map<string, number>();
+
+/** Depois disto, uma transmissão que falhou pode ser redescoberta. */
+const DEAD_BEACON_TTL_MS = 3 * 60 * 1000;
+
+function isDead(messageId: string): boolean {
+    const when = deadBeacons.get(messageId);
+    if (when === undefined) return false;
+
+    if (Date.now() - when < DEAD_BEACON_TTL_MS) return true;
+
+    deadBeacons.delete(messageId);
+    return false;
+}
 
 const beaconListeners = new Set<(beacons: Beacon[]) => void>();
 
@@ -36,6 +65,79 @@ export function isWatching(sessionId: string): boolean {
 /** Quantas transmissões estou assistindo agora. */
 export function watchingCount(): number {
     return watching.size;
+}
+
+/**
+ * Registra e anuncia um beacon. Único caminho de entrada: o evento ao vivo e a
+ * varredura do histórico passam os dois por aqui, então o que vale para um
+ * vale para o outro.
+ *
+ * A deduplicação é por messageId. Sem ela, entrar e sair do canal de voz faria
+ * o mesmo aviso pipocar de novo a cada varredura.
+ */
+function acceptBeacon(beacon: Beacon): void {
+    if (beacons.has(beacon.messageId)) return;
+    if (isDead(beacon.messageId)) return;
+
+    beacons.set(beacon.messageId, beacon);
+    notifyBeacons();
+
+    // Já estou vendo esta transmissão: o aviso só atrapalharia.
+    if (watching.has(beacon.sessionId)) return;
+
+    host.announceBeacon(
+        { sessionId: beacon.sessionId, broadcasterName: beacon.broadcasterName },
+        () => { void startWatching(beacon); }
+    );
+}
+
+/**
+ * Esquece um beacon de vez: tira o aviso da tela e marca a mensagem como
+ * morta, para que nem `stopWatching` nem uma varredura futura o tragam de
+ * volta.
+ */
+function forgetBeacon(sessionId: string): void {
+    for (const [messageId, beacon] of beacons) {
+        if (beacon.sessionId !== sessionId) continue;
+
+        beacons.delete(messageId);
+        deadBeacons.set(messageId, Date.now());
+    }
+
+    host.revokeBeacon(sessionId);
+}
+
+/**
+ * Procura transmissões em andamento no histórico recente de um canal.
+ *
+ * O beacon é anunciado uma vez só, quando a mensagem chega: quem entra no
+ * canal depois nunca via nada. Devolve quantos beacons novos apareceram.
+ *
+ * Falha em silêncio de propósito — o histórico é um complemento à descoberta
+ * ao vivo, e um canal ilegível não pode atrapalhar a entrada na chamada.
+ */
+export async function scanChannelHistory(channelId: string, limit?: number): Promise<number> {
+    if (!channelId) return 0;
+
+    let messages;
+    try {
+        messages = await host.fetchRecentMessages(channelId, limit);
+    } catch (err) {
+        console.warn("[P2PShare] não deu para varrer o histórico do canal", err);
+        return 0;
+    }
+
+    const found = selectBeacons(messages, {
+        excludeAuthorId: host.getCurrentUserId(),
+        knownMessageIds: [
+            ...beacons.keys(),
+            ...[...deadBeacons.keys()].filter(isDead)
+        ]
+    });
+
+    for (const beacon of found) acceptBeacon(beacon);
+
+    return found.length;
 }
 
 export async function startWatching(beacon: Beacon): Promise<void> {
@@ -68,6 +170,11 @@ export async function startWatching(beacon: Beacon): Promise<void> {
 
     peer.onFailed = reason => {
         host.toast(reason, "error");
+
+        // Beacon órfão: quem transmitia pode ter fechado o Discord à força e
+        // deixado a mensagem no canal. Esquecer antes de parar impede que
+        // `stopWatching` reanuncie um aviso que não leva a lugar nenhum.
+        forgetBeacon(beacon.sessionId);
         stopWatching(beacon.sessionId);
     };
 
@@ -76,6 +183,7 @@ export async function startWatching(beacon: Beacon): Promise<void> {
         host.toast(`Conectando com ${beacon.broadcasterName}…`, "info");
     } catch (err) {
         host.toast(`não deu para pedir a transmissão: ${(err as Error).message}`, "error");
+        forgetBeacon(beacon.sessionId);
         stopWatching(beacon.sessionId);
     }
 }
@@ -115,13 +223,7 @@ export function initWatcher(): () => void {
             // Meu próprio beacon não me interessa como viewer.
             if (beacon.broadcasterId === myId) return;
 
-            beacons.set(beacon.messageId, beacon);
-            notifyBeacons();
-
-            host.announceBeacon(
-                { sessionId: beacon.sessionId, broadcasterName: beacon.broadcasterName },
-                () => { void startWatching(beacon); }
-            );
+            acceptBeacon(beacon);
         },
 
         onBeaconGone: (_channelId, messageId) => {
@@ -151,6 +253,7 @@ export function initWatcher(): () => void {
         // isso deixaria avisos órfãos na tela.
         for (const beacon of beacons.values()) host.revokeBeacon(beacon.sessionId);
         beacons.clear();
+        deadBeacons.clear();
 
         for (const sessionId of [...watching.keys()]) stopWatching(sessionId);
         host.unmountAllOverlays();

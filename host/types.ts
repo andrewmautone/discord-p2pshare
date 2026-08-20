@@ -70,6 +70,14 @@ export interface Host {
         content: string
     ): Promise<void>;
     fetchAttachmentText(url: string): Promise<string>;
+    /**
+     * Mensagens recentes do canal, da mais nova para a mais antiga.
+     *
+     * Existe porque o beacon é anunciado uma única vez, por evento: quem entra
+     * no canal depois da transmissão começar nunca veria nada. Devolve lista
+     * vazia quando não dá para ler — descobrir menos é melhor que quebrar.
+     */
+    fetchRecentMessages(channelId: string, limit?: number): Promise<HostMessage[]>;
     /** Canal de DM com o usuário, ou null quando o Discord não deixa abrir. */
     openDm(userId: string): Promise<string | null>;
 

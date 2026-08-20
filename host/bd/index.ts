@@ -30,6 +30,7 @@ export const host: Host = {
     deleteMessage: api.deleteMessage,
     uploadTextAttachment: api.uploadTextAttachment,
     fetchAttachmentText: api.fetchAttachmentText,
+    fetchRecentMessages: api.fetchRecentMessages,
     openDm: api.openDm,
 
     onMessageCreate: api.onMessageCreate,

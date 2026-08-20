@@ -9,6 +9,7 @@ import { showToast, Toasts } from "@webpack/common";
 import {
     deleteMessage,
     fetchAttachmentText,
+    fetchRecentMessages,
     getCurrentUserId,
     getCurrentUsername,
     getUsername,
@@ -39,6 +40,7 @@ export const host: Host = {
     deleteMessage,
     uploadTextAttachment,
     fetchAttachmentText,
+    fetchRecentMessages,
     openDm,
 
     onMessageCreate,

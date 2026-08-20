@@ -402,6 +402,14 @@ const CSS = `
     line-height: 14px;
     white-space: nowrap;
 }
+/* A linha da barra lateral é bem mais baixa e estreita que a da chamada: com
+   o tamanho do selo de dentro da chamada ela cresce e desalinha o canal. */
+.p2ps-live-chip-side {
+    margin-left: 4px;
+    padding: 0 4px;
+    font-size: 8px;
+    line-height: 12px;
+}
 .p2ps-overlay-bar button {
     background: none;
     border: none;
@@ -708,7 +716,10 @@ export function mountVoiceButton(opts: {
         // sem forma de transmitir, e o flutuante ja teria sido escondido.
         opts.onAnchorChange([...voiceBtns.values()].some(isVisible));
         // A lista e a grade re-renderizam sozinhas; os selos precisam voltar.
+        // A barra lateral vem depois da lista da chamada: ela desiste da linha
+        // que ja' recebeu selo, e isso depende de a outra ter passado antes.
         applyLiveBadges();
+        applySidebarBadges();
         applyTileBadges();
         applyTileVideos();
         dumpVoiceDiagnostics();
@@ -735,6 +746,9 @@ export function mountVoiceButton(opts: {
         voiceObserver = null;
         for (const btn of voiceBtns.values()) removeBtn(btn);
         voiceBtns.clear();
+        // O selo da barra lateral nao vive num mapa nosso: sem isto ele ficaria
+        // no DOM do Discord depois do plugin sair.
+        removeSidebarBadges();
     };
 }
 
@@ -744,7 +758,10 @@ let lastDumpKey = "";
 export function dumpVoiceDiagnostics(): void {
     try {
         const sites = collectSites();
-        const key = sites.map(s => s.host.className).join("|") + "#" + voiceBtns.size;
+        const key = sites.map(s => s.host.className).join("|") + "#" + voiceBtns.size
+            // Sem a parte do selo, mudanca so' na barra lateral nunca gravaria.
+            + "#" + sidebarDiag.estrategiaEscolhida
+            + ":" + sidebarDiag.linhas + ":" + sidebarDiag.selosAtivos;
         if (key === lastDumpKey) return;
         lastDumpKey = key;
 
@@ -761,7 +778,13 @@ export function dumpVoiceDiagnostics(): void {
             }),
             flutuante: launcher
                 ? (launcher.classList.contains("p2ps-launcher-hidden") ? "escondido" : "visivel")
-                : "nao montado"
+                : "nao montado",
+            // Qual estrategia de ancoragem venceu na barra lateral e quantas
+            // linhas cada uma acharia: e' o que diz se o seletor ainda existe.
+            seloBarraLateral: {
+                ...sidebarDiag,
+                transmitindo: liveUsers.length
+            }
         };
 
         const fs = require("fs");
@@ -823,28 +846,7 @@ function applyLiveBadges(): void {
         const user = liveUsers.find(u =>
             (id && u.id === id) || (!!text && u.names.includes(text)));
 
-        const chip = document.createElement("span");
-        chip.className = "p2ps-live-chip";
-        chip.textContent = "AO VIVO";
-
-        if (user?.onWatch) {
-            chip.classList.add("p2ps-clickable");
-            chip.title = "Clique para assistir";
-            chip.setAttribute("role", "button");
-            chip.tabIndex = 0;
-
-            // mousedown também: o Discord abre o perfil da pessoa nesse evento,
-            // antes do clique chegar aqui.
-            const open = (e: Event) => {
-                e.preventDefault();
-                e.stopPropagation();
-                user.onWatch!();
-            };
-            chip.addEventListener("mousedown", e => e.stopPropagation());
-            chip.addEventListener("click", open);
-        } else {
-            chip.title = "Transmitindo via P2PShare";
-        }
+        const chip = buildLiveChip(user);
 
         // No fim da linha do participante, empurrado para a direita pelo
         // margin-left auto. O contêiner de ícones parecia o lugar, mas ele só
@@ -855,6 +857,261 @@ function applyLiveBadges(): void {
             ?? nameEl?.parentElement;
         slot?.appendChild(chip);
     }
+}
+
+/**
+ * O selo em si, compartilhado pela lista da chamada e pela barra lateral.
+ *
+ * `channelId` só chega da barra lateral, e serve de acao de reserva: quando
+ * nao ha transmissao para abrir (sou eu no ar, ou ja' estou assistindo), o
+ * clique ainda leva ate' o canal. Entrar na chamada continua sendo escolha da
+ * pessoa: nada aqui conecta ninguem.
+ */
+function buildLiveChip(user: LiveUser | undefined, channelId?: string | null): HTMLElement {
+    const chip = document.createElement("span");
+    chip.className = "p2ps-live-chip";
+    chip.textContent = "AO VIVO";
+
+    const act = user?.onWatch ?? (channelId ? () => focusChannel(channelId) : null);
+
+    if (act) {
+        chip.classList.add("p2ps-clickable");
+        chip.title = user?.onWatch ? "Clique para assistir" : "Clique para abrir o canal";
+        chip.setAttribute("role", "button");
+        chip.tabIndex = 0;
+
+        // mousedown também: o Discord abre o perfil da pessoa nesse evento,
+        // antes do clique chegar aqui.
+        const open = (e: Event) => {
+            e.preventDefault();
+            e.stopPropagation();
+            act();
+        };
+        chip.addEventListener("mousedown", e => e.stopPropagation());
+        chip.addEventListener("click", open);
+    } else {
+        chip.title = "Transmitindo via P2PShare";
+    }
+
+    return chip;
+}
+
+// ------------------------------------- selo AO VIVO na barra lateral
+
+/**
+ * Quem nao entrou no canal nunca ve a lista de participantes da chamada — so'
+ * a listinha que o Discord desenha embaixo do canal de voz, na barra lateral.
+ * E' o unico lugar onde o selo alcanca essa pessoa.
+ *
+ * As classes de la' vem com sufixo gerado e mudam entre versoes do cliente, e
+ * daqui nao da' para inspecionar o DOM real. Por isso nao ha um seletor, e sim
+ * uma fila de estrategias: a primeira que devolver linhas vence, e o
+ * diagnostico registra qual foi e quantas achou, para conferir no cliente.
+ * Se nenhuma casar, a funcao nao faz nada — o selo simplesmente nao aparece.
+ */
+interface SidebarRow {
+    el: HTMLElement;
+    /** Para onde o clique leva; nulo quando nao deu para descobrir o canal. */
+    channelId: string | null;
+}
+
+interface SidebarStrategy {
+    name: string;
+    rows(): SidebarRow[];
+}
+
+const CHANNEL_ITEM_PREFIX = "channels___";
+const CHANNEL_ITEM = `[data-list-item-id^="${CHANNEL_ITEM_PREFIX}"]`;
+
+/**
+ * A barra lateral, para separar do painel de participantes da chamada, que usa
+ * as mesmas classes de linha de usuario e ja' e' atendido por applyLiveBadges.
+ */
+const SIDEBAR_SCOPE = 'nav, [class*="sidebar"], [class*="channelList"], [class*="privateChannels"]';
+
+function channelIdOf(el: Element): string | null {
+    const raw = el.closest(CHANNEL_ITEM)?.getAttribute("data-list-item-id") ?? "";
+    return raw.slice(CHANNEL_ITEM_PREFIX.length) || null;
+}
+
+/** Sobe do avatar ate' a linha da pessoa, sem passar do item do canal. */
+function climbToRow(el: HTMLElement, scope: HTMLElement): HTMLElement {
+    const marked = el.closest<HTMLElement>(
+        'li, [role="listitem"], [class*="voiceUser"], [class*="userItem"]');
+    if (marked && marked !== scope && scope.contains(marked)) return marked;
+
+    let node = el;
+    while (node.parentElement && node.parentElement !== scope) node = node.parentElement;
+    return node;
+}
+
+const SIDEBAR_STRATEGIES: SidebarStrategy[] = [
+    {
+        // O caso esperado: o Discord pendura os conectados dentro do proprio
+        // item do canal, com a mesma classe de linha usada na chamada.
+        name: "channel-item-voiceuser",
+        rows: () => [...document.querySelectorAll<HTMLElement>(CHANNEL_ITEM)]
+            .flatMap(item => [...item.querySelectorAll<HTMLElement>('[class*="voiceUser"]')]
+                .map(el => ({ el, channelId: channelIdOf(item) })))
+    },
+    {
+        // A lista pode ser irma do item do canal, e nao filha; ai' o id do
+        // canal so' aparece se algum ancestral comum ainda o carregar.
+        name: "voice-users-list",
+        rows: () => [...document.querySelectorAll<HTMLElement>('[class*="voiceUsers"]')]
+            .flatMap(list => [...list.children] as HTMLElement[])
+            .map(el => ({ el, channelId: channelIdOf(el) }))
+    },
+    {
+        // Sem o item do canal por perto, sobra reconhecer a linha pela classe
+        // e confiar no escopo para nao invadir o painel da chamada.
+        name: "sidebar-voiceuser",
+        rows: () => [...document.querySelectorAll<HTMLElement>(SIDEBAR_SCOPE)]
+            .flatMap(scope => [...scope.querySelectorAll<HTMLElement>('[class*="voiceUser"]')])
+            .map(el => ({ el, channelId: channelIdOf(el) }))
+    },
+    {
+        // Ultimo recurso: nenhuma classe reconhecivel, so' o avatar. Toda linha
+        // tem um, e dele sai tambem o id do usuario.
+        name: "channel-item-avatar",
+        rows: () => [...document.querySelectorAll<HTMLElement>(CHANNEL_ITEM)]
+            .flatMap(item => [...item.querySelectorAll<HTMLElement>('img[src*="avatars/"]')]
+                .map(img => ({ el: climbToRow(img, item), channelId: channelIdOf(item) })))
+    }
+];
+
+/** Uma linha por elemento, e nenhuma dentro de outra: senao o selo duplica. */
+function dedupeRows(rows: SidebarRow[]): SidebarRow[] {
+    const out: SidebarRow[] = [];
+
+    for (const row of rows) {
+        if (!row.el?.isConnected || row.el === document.body) continue;
+        if (out.some(o => o.el === row.el || o.el.contains(row.el) || row.el.contains(o.el))) {
+            continue;
+        }
+        out.push(row);
+    }
+
+    return out;
+}
+
+/**
+ * Id do usuario a partir do avatar.
+ *
+ * A barra lateral costuma usar <img>, e o painel da chamada, background-image:
+ * as duas formas trazem o id na URL. Quem usa avatar padrao nao tem id em
+ * lugar nenhum — por isso o nome continua como reserva.
+ */
+function avatarUserId(row: HTMLElement): string | null {
+    for (const img of row.querySelectorAll<HTMLImageElement>("img[src]")) {
+        const id = img.getAttribute("src")?.match(/avatars\/(\d+)\//)?.[1];
+        if (id) return id;
+    }
+
+    for (const el of row.querySelectorAll<HTMLElement>("[style*='avatars/']")) {
+        const id = (el.style.backgroundImage || "").match(/avatars\/(\d+)\//)?.[1];
+        if (id) return id;
+    }
+
+    return null;
+}
+
+function nameTextsOf(row: HTMLElement): string[] {
+    const texts = [...row.querySelectorAll<HTMLElement>('[class*="name"]')]
+        .map(el => el.textContent?.trim() ?? "")
+        .filter(Boolean);
+
+    if (texts.length) return texts;
+
+    // Linha sem elemento de nome reconhecivel: o texto inteiro dela e' o nome.
+    const whole = row.textContent?.trim();
+    return whole ? [whole] : [];
+}
+
+function liveUserOf(row: HTMLElement): LiveUser | undefined {
+    const id = avatarUserId(row);
+    if (id) {
+        const byId = liveUsers.find(u => u.id === id);
+        if (byId) return byId;
+    }
+
+    const texts = nameTextsOf(row);
+    return liveUsers.find(u => u.names.some(n => texts.includes(n)));
+}
+
+let sidebarDiag: {
+    estrategiaEscolhida: string | null;
+    linhas: number;
+    selosAtivos: number;
+    tentativas: { estrategia: string; linhas: number; }[];
+} = { estrategiaEscolhida: null, linhas: 0, selosAtivos: 0, tentativas: [] };
+
+function applySidebarBadges(): void {
+    const tentativas: { estrategia: string; linhas: number; }[] = [];
+    let escolhida: string | null = null;
+    let rows: SidebarRow[] = [];
+
+    // Todas sao medidas, mesmo depois de uma casar: e' o que permite ver no
+    // diagnostico qual seletor ainda existe no cliente quando um deles morrer.
+    for (const strategy of SIDEBAR_STRATEGIES) {
+        let found: SidebarRow[] = [];
+        try {
+            found = dedupeRows(strategy.rows());
+        } catch {
+            found = [];
+        }
+
+        tentativas.push({ estrategia: strategy.name, linhas: found.length });
+        if (!escolhida && found.length) {
+            escolhida = strategy.name;
+            rows = found;
+        }
+    }
+
+    const claimed = new Set<HTMLElement>();
+
+    for (const row of rows) {
+        const user = liveUserOf(row.el);
+        if (!user) continue;
+
+        claimed.add(row.el);
+
+        // A mesma pessoa pode estar aqui e na chamada ao mesmo tempo; um selo
+        // por linha, e a linha da chamada ja' foi atendida por applyLiveBadges.
+        if (row.el.querySelector(".p2ps-live-chip")) continue;
+
+        const chip = buildLiveChip(user, row.channelId);
+        chip.classList.add("p2ps-live-chip-side");
+
+        const slot = row.el.querySelector('[class*="content__"]')
+            ?? row.el.querySelector('[class*="name"]')?.parentElement
+            ?? row.el;
+        slot.appendChild(chip);
+    }
+
+    // Sobras de re-render: o Discord recria a linha e um selo antigo pode ficar
+    // pendurado em pedaco que ninguem mais reivindica, ou duplicado na linha.
+    for (const chip of document.querySelectorAll<HTMLElement>(".p2ps-live-chip-side")) {
+        const owner = [...claimed].find(r => r.contains(chip));
+        if (!owner) {
+            chip.remove();
+            continue;
+        }
+
+        const ours = owner.querySelectorAll(".p2ps-live-chip-side");
+        for (let i = 1; i < ours.length; i++) ours[i].remove();
+    }
+
+    sidebarDiag = {
+        estrategiaEscolhida: escolhida,
+        linhas: rows.length,
+        selosAtivos: document.querySelectorAll(".p2ps-live-chip-side").length,
+        tentativas
+    };
+}
+
+function removeSidebarBadges(): void {
+    for (const chip of document.querySelectorAll(".p2ps-live-chip-side")) chip.remove();
 }
 
 /**
@@ -955,6 +1212,7 @@ export function focusChannel(channelId: string): void {
 export function setLiveUsers(users: LiveUser[]): void {
     liveUsers = users;
     applyLiveBadges();
+    applySidebarBadges();
     applyTileBadges();
 }
 

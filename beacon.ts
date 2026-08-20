@@ -72,6 +72,71 @@ export function parseBeacon(message: BeaconSource): Beacon | null {
     };
 }
 
+export interface BeaconScanOptions {
+    /** Autor a ignorar. Meu próprio beacon não me interessa como viewer. */
+    excludeAuthorId?: string;
+    /**
+     * messageIds que já passaram por aqui. Sem isso, cada varredura do
+     * histórico reanunciaria transmissões que já estão na tela.
+     */
+    knownMessageIds?: Iterable<string>;
+}
+
+/**
+ * Filtra beacons de um punhado de mensagens, na ordem em que chegaram.
+ *
+ * Aceita `unknown` de propósito: a origem é o store do Discord, cujo formato
+ * varia entre versões e traz registros meio construídos enquanto o canal
+ * carrega. Mensagem que não tem a forma esperada é descartada em silêncio —
+ * uma varredura de histórico não pode derrubar a descoberta inteira por causa
+ * de um registro estranho.
+ */
+export function selectBeacons(
+    messages: readonly unknown[],
+    opts: BeaconScanOptions = {}
+): Beacon[] {
+    const seen = new Set(opts.knownMessageIds ?? []);
+    const found: Beacon[] = [];
+
+    for (const raw of messages) {
+        const source = toBeaconSource(raw);
+        if (!source || seen.has(source.id)) continue;
+
+        seen.add(source.id);
+
+        const beacon = parseBeacon(source);
+        if (!beacon) continue;
+        if (beacon.broadcasterId === opts.excludeAuthorId) continue;
+
+        found.push(beacon);
+    }
+
+    return found;
+}
+
+/** Aceita `channelId` camelCase: o store do Discord usa as duas grafias. */
+function toBeaconSource(raw: unknown): BeaconSource | null {
+    const m = raw as any;
+
+    const id = m?.id;
+    const content = m?.content;
+    const authorId = m?.author?.id;
+    const channelId = m?.channel_id ?? m?.channelId;
+
+    if (typeof id !== "string") return null;
+    if (typeof content !== "string") return null;
+    if (typeof authorId !== "string") return null;
+    if (typeof channelId !== "string") return null;
+
+    return {
+        id,
+        channel_id: channelId,
+        content,
+        // Sem nome nenhum o id cru ainda identifica quem transmite.
+        author: { id: authorId, username: m.author.username ?? authorId }
+    };
+}
+
 /**
  * Corpo da mensagem de handshake: só o marcador invisível, para o plugin
  * reconhecer a mensagem sem precisar baixar o anexo.

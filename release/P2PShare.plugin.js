@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.16.0
+ * @version 1.17.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.16.0";
+var PLUGIN_VERSION = "1.17.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
@@ -214,22 +214,40 @@ function newSessionId() {
 
 // host/bd/api.ts
 var { getModule } = BdApi.Webpack;
+function lookup(filter) {
+  let found = getModule(filter);
+  if (found === void 0) {
+    found = getModule(filter, { searchExports: true });
+  }
+  if (found === void 0) {
+    const wrapper = getModule((m) => m?.default && filter(m.default));
+    if (wrapper) found = wrapper.default;
+  }
+  return found ?? void 0;
+}
 function find(name, filter) {
   let cached;
   return () => {
     if (cached !== void 0) return cached;
-    cached = getModule(filter);
+    cached = lookup(filter);
     if (cached === void 0) {
-      cached = getModule(filter, { searchExports: true });
-    }
-    if (cached === void 0) {
-      const wrapper = getModule((m) => m?.default && filter(m.default));
-      if (wrapper) cached = wrapper.default;
-    }
-    if (cached === void 0 || cached === null) {
       throw new Error(
         `[P2PShare] n\xE3o encontrei o m\xF3dulo ${name} no Discord. Provavelmente o Discord mudou a estrutura interna \u2014 reporte com este nome.`
       );
+    }
+    return cached;
+  };
+}
+function findOptional(filter) {
+  let cached;
+  let resolved = false;
+  return () => {
+    if (resolved) return cached;
+    resolved = true;
+    try {
+      cached = lookup(filter);
+    } catch {
+      cached = void 0;
     }
     return cached;
   };
@@ -253,6 +271,9 @@ var RestAPI = find(
 var CloudUpload = find(
   "CloudUpload",
   (m) => m?.prototype?.trackUploadFinished
+);
+var MessageStore = findOptional(
+  (m) => m?.getMessages && m?.getMessage && m?.getLastMessage
 );
 function nonce() {
   const DISCORD_EPOCH = 1420070400000n;
@@ -342,6 +363,59 @@ async function fetchAttachmentText(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`anexo respondeu ${res.status}`);
   return res.text();
+}
+var HISTORY_LIMIT = 50;
+async function fetchRecentMessages(channelId, limit = HISTORY_LIMIT) {
+  const cached = readCachedMessages(channelId, limit);
+  if (cached.length > 0) return cached;
+  try {
+    const rest = RestAPI();
+    if (typeof rest.get !== "function") return [];
+    const res = await rest.get({
+      url: `/channels/${channelId}/messages?limit=${limit}`
+    });
+    return normalizeMessages(res?.body, channelId, limit);
+  } catch (err) {
+    console.warn("[P2PShare] n\xE3o deu para buscar o hist\xF3rico do canal", err);
+    return [];
+  }
+}
+function readCachedMessages(channelId, limit) {
+  try {
+    const store = MessageStore();
+    if (!store) return [];
+    const cache = store.getMessages(channelId);
+    if (!cache || cache.ready === false) return [];
+    const list = toArray(cache).slice(-limit).reverse();
+    return normalizeMessages(list, channelId, limit);
+  } catch (err) {
+    console.warn("[P2PShare] cache de mensagens indispon\xEDvel", err);
+    return [];
+  }
+}
+function toArray(cache) {
+  if (Array.isArray(cache)) return cache;
+  if (typeof cache.toArray === "function") return cache.toArray() ?? [];
+  if (Array.isArray(cache._array)) return cache._array;
+  return [];
+}
+function normalizeMessages(raw, channelId, limit) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const m of raw.slice(0, limit)) {
+    if (typeof m?.id !== "string" || typeof m?.content !== "string") continue;
+    if (typeof m?.author?.id !== "string") continue;
+    out.push({
+      id: m.id,
+      // Registro de cache nem sempre carrega o canal; sem ele o
+      // handshake sairia sem destino, então o canal pedido é a verdade.
+      channel_id: m.channel_id ?? m.channelId ?? channelId,
+      content: m.content,
+      author: { id: m.author.id, username: m.author.username ?? m.author.id },
+      attachments: Array.isArray(m.attachments) ? m.attachments : []
+    });
+  }
+  return out;
 }
 function onMessageCreate(handler) {
   const listener = (event) => {
@@ -1130,6 +1204,14 @@ var CSS = `
     line-height: 14px;
     white-space: nowrap;
 }
+/* A linha da barra lateral \xE9 bem mais baixa e estreita que a da chamada: com
+   o tamanho do selo de dentro da chamada ela cresce e desalinha o canal. */
+.p2ps-live-chip-side {
+    margin-left: 4px;
+    padding: 0 4px;
+    font-size: 8px;
+    line-height: 12px;
+}
 .p2ps-overlay-bar button {
     background: none;
     border: none;
@@ -1328,6 +1410,7 @@ function mountVoiceButton(opts) {
     }
     opts.onAnchorChange([...voiceBtns.values()].some(isVisible));
     applyLiveBadges();
+    applySidebarBadges();
     applyTileBadges();
     applyTileVideos();
     dumpVoiceDiagnostics();
@@ -1349,13 +1432,14 @@ function mountVoiceButton(opts) {
     voiceObserver = null;
     for (const btn of voiceBtns.values()) removeBtn(btn);
     voiceBtns.clear();
+    removeSidebarBadges();
   };
 }
 var lastDumpKey = "";
 function dumpVoiceDiagnostics() {
   try {
     const sites = collectSites();
-    const key = sites.map((s) => s.host.className).join("|") + "#" + voiceBtns.size;
+    const key = sites.map((s) => s.host.className).join("|") + "#" + voiceBtns.size + "#" + sidebarDiag.estrategiaEscolhida + ":" + sidebarDiag.linhas + ":" + sidebarDiag.selosAtivos;
     if (key === lastDumpKey) return;
     lastDumpKey = key;
     const data = {
@@ -1369,7 +1453,13 @@ function dumpVoiceDiagnostics() {
           pos: `${Math.round(r.x)},${Math.round(r.y)}`
         };
       }),
-      flutuante: launcher ? launcher.classList.contains("p2ps-launcher-hidden") ? "escondido" : "visivel" : "nao montado"
+      flutuante: launcher ? launcher.classList.contains("p2ps-launcher-hidden") ? "escondido" : "visivel" : "nao montado",
+      // Qual estrategia de ancoragem venceu na barra lateral e quantas
+      // linhas cada uma acharia: e' o que diz se o seletor ainda existe.
+      seloBarraLateral: {
+        ...sidebarDiag,
+        transmitindo: liveUsers.length
+      }
     };
     const fs = require("fs");
     const path = require("path");
@@ -1401,27 +1491,159 @@ function applyLiveBadges() {
     }
     if (existing) continue;
     const user = liveUsers.find((u) => id && u.id === id || !!text && u.names.includes(text));
-    const chip = document.createElement("span");
-    chip.className = "p2ps-live-chip";
-    chip.textContent = "AO VIVO";
-    if (user?.onWatch) {
-      chip.classList.add("p2ps-clickable");
-      chip.title = "Clique para assistir";
-      chip.setAttribute("role", "button");
-      chip.tabIndex = 0;
-      const open = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        user.onWatch();
-      };
-      chip.addEventListener("mousedown", (e) => e.stopPropagation());
-      chip.addEventListener("click", open);
-    } else {
-      chip.title = "Transmitindo via P2PShare";
-    }
+    const chip = buildLiveChip(user);
     const slot = row.querySelector('[class*="content__"]') ?? row.querySelector('[class*="chipletParent"]') ?? nameEl?.parentElement;
     slot?.appendChild(chip);
   }
+}
+function buildLiveChip(user, channelId) {
+  const chip = document.createElement("span");
+  chip.className = "p2ps-live-chip";
+  chip.textContent = "AO VIVO";
+  const act = user?.onWatch ?? (channelId ? () => focusChannel(channelId) : null);
+  if (act) {
+    chip.classList.add("p2ps-clickable");
+    chip.title = user?.onWatch ? "Clique para assistir" : "Clique para abrir o canal";
+    chip.setAttribute("role", "button");
+    chip.tabIndex = 0;
+    const open = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      act();
+    };
+    chip.addEventListener("mousedown", (e) => e.stopPropagation());
+    chip.addEventListener("click", open);
+  } else {
+    chip.title = "Transmitindo via P2PShare";
+  }
+  return chip;
+}
+var CHANNEL_ITEM_PREFIX = "channels___";
+var CHANNEL_ITEM = `[data-list-item-id^="${CHANNEL_ITEM_PREFIX}"]`;
+var SIDEBAR_SCOPE = 'nav, [class*="sidebar"], [class*="channelList"], [class*="privateChannels"]';
+function channelIdOf(el) {
+  const raw = el.closest(CHANNEL_ITEM)?.getAttribute("data-list-item-id") ?? "";
+  return raw.slice(CHANNEL_ITEM_PREFIX.length) || null;
+}
+function climbToRow(el, scope) {
+  const marked = el.closest(
+    'li, [role="listitem"], [class*="voiceUser"], [class*="userItem"]'
+  );
+  if (marked && marked !== scope && scope.contains(marked)) return marked;
+  let node = el;
+  while (node.parentElement && node.parentElement !== scope) node = node.parentElement;
+  return node;
+}
+var SIDEBAR_STRATEGIES = [
+  {
+    // O caso esperado: o Discord pendura os conectados dentro do proprio
+    // item do canal, com a mesma classe de linha usada na chamada.
+    name: "channel-item-voiceuser",
+    rows: () => [...document.querySelectorAll(CHANNEL_ITEM)].flatMap((item) => [...item.querySelectorAll('[class*="voiceUser"]')].map((el) => ({ el, channelId: channelIdOf(item) })))
+  },
+  {
+    // A lista pode ser irma do item do canal, e nao filha; ai' o id do
+    // canal so' aparece se algum ancestral comum ainda o carregar.
+    name: "voice-users-list",
+    rows: () => [...document.querySelectorAll('[class*="voiceUsers"]')].flatMap((list) => [...list.children]).map((el) => ({ el, channelId: channelIdOf(el) }))
+  },
+  {
+    // Sem o item do canal por perto, sobra reconhecer a linha pela classe
+    // e confiar no escopo para nao invadir o painel da chamada.
+    name: "sidebar-voiceuser",
+    rows: () => [...document.querySelectorAll(SIDEBAR_SCOPE)].flatMap((scope) => [...scope.querySelectorAll('[class*="voiceUser"]')]).map((el) => ({ el, channelId: channelIdOf(el) }))
+  },
+  {
+    // Ultimo recurso: nenhuma classe reconhecivel, so' o avatar. Toda linha
+    // tem um, e dele sai tambem o id do usuario.
+    name: "channel-item-avatar",
+    rows: () => [...document.querySelectorAll(CHANNEL_ITEM)].flatMap((item) => [...item.querySelectorAll('img[src*="avatars/"]')].map((img) => ({ el: climbToRow(img, item), channelId: channelIdOf(item) })))
+  }
+];
+function dedupeRows(rows) {
+  const out = [];
+  for (const row of rows) {
+    if (!row.el?.isConnected || row.el === document.body) continue;
+    if (out.some((o) => o.el === row.el || o.el.contains(row.el) || row.el.contains(o.el))) {
+      continue;
+    }
+    out.push(row);
+  }
+  return out;
+}
+function avatarUserId(row) {
+  for (const img of row.querySelectorAll("img[src]")) {
+    const id = img.getAttribute("src")?.match(/avatars\/(\d+)\//)?.[1];
+    if (id) return id;
+  }
+  for (const el of row.querySelectorAll("[style*='avatars/']")) {
+    const id = (el.style.backgroundImage || "").match(/avatars\/(\d+)\//)?.[1];
+    if (id) return id;
+  }
+  return null;
+}
+function nameTextsOf(row) {
+  const texts = [...row.querySelectorAll('[class*="name"]')].map((el) => el.textContent?.trim() ?? "").filter(Boolean);
+  if (texts.length) return texts;
+  const whole = row.textContent?.trim();
+  return whole ? [whole] : [];
+}
+function liveUserOf(row) {
+  const id = avatarUserId(row);
+  if (id) {
+    const byId = liveUsers.find((u) => u.id === id);
+    if (byId) return byId;
+  }
+  const texts = nameTextsOf(row);
+  return liveUsers.find((u) => u.names.some((n) => texts.includes(n)));
+}
+var sidebarDiag = { estrategiaEscolhida: null, linhas: 0, selosAtivos: 0, tentativas: [] };
+function applySidebarBadges() {
+  const tentativas = [];
+  let escolhida = null;
+  let rows = [];
+  for (const strategy of SIDEBAR_STRATEGIES) {
+    let found = [];
+    try {
+      found = dedupeRows(strategy.rows());
+    } catch {
+      found = [];
+    }
+    tentativas.push({ estrategia: strategy.name, linhas: found.length });
+    if (!escolhida && found.length) {
+      escolhida = strategy.name;
+      rows = found;
+    }
+  }
+  const claimed = /* @__PURE__ */ new Set();
+  for (const row of rows) {
+    const user = liveUserOf(row.el);
+    if (!user) continue;
+    claimed.add(row.el);
+    if (row.el.querySelector(".p2ps-live-chip")) continue;
+    const chip = buildLiveChip(user, row.channelId);
+    chip.classList.add("p2ps-live-chip-side");
+    const slot = row.el.querySelector('[class*="content__"]') ?? row.el.querySelector('[class*="name"]')?.parentElement ?? row.el;
+    slot.appendChild(chip);
+  }
+  for (const chip of document.querySelectorAll(".p2ps-live-chip-side")) {
+    const owner = [...claimed].find((r) => r.contains(chip));
+    if (!owner) {
+      chip.remove();
+      continue;
+    }
+    const ours = owner.querySelectorAll(".p2ps-live-chip-side");
+    for (let i = 1; i < ours.length; i++) ours[i].remove();
+  }
+  sidebarDiag = {
+    estrategiaEscolhida: escolhida,
+    linhas: rows.length,
+    selosAtivos: document.querySelectorAll(".p2ps-live-chip-side").length,
+    tentativas
+  };
+}
+function removeSidebarBadges() {
+  for (const chip of document.querySelectorAll(".p2ps-live-chip-side")) chip.remove();
 }
 function currentUserId() {
   try {
@@ -1478,6 +1700,7 @@ function focusChannel(channelId) {
 function setLiveUsers(users) {
   liveUsers = users;
   applyLiveBadges();
+  applySidebarBadges();
   applyTileBadges();
 }
 var RESOLUTIONS = [
@@ -2005,6 +2228,7 @@ var host = {
   deleteMessage,
   uploadTextAttachment,
   fetchAttachmentText,
+  fetchRecentMessages,
   openDm,
   onMessageCreate,
   onMessageDelete,
@@ -2218,6 +2442,38 @@ function parseBeacon(message) {
     sessionId: payload.s,
     broadcasterId: message.author.id,
     broadcasterName: message.author.username
+  };
+}
+function selectBeacons(messages, opts = {}) {
+  const seen = new Set(opts.knownMessageIds ?? []);
+  const found = [];
+  for (const raw of messages) {
+    const source = toBeaconSource(raw);
+    if (!source || seen.has(source.id)) continue;
+    seen.add(source.id);
+    const beacon = parseBeacon(source);
+    if (!beacon) continue;
+    if (beacon.broadcasterId === opts.excludeAuthorId) continue;
+    found.push(beacon);
+  }
+  return found;
+}
+function toBeaconSource(raw) {
+  const m = raw;
+  const id = m?.id;
+  const content = m?.content;
+  const authorId = m?.author?.id;
+  const channelId = m?.channel_id ?? m?.channelId;
+  if (typeof id !== "string") return null;
+  if (typeof content !== "string") return null;
+  if (typeof authorId !== "string") return null;
+  if (typeof channelId !== "string") return null;
+  return {
+    id,
+    channel_id: channelId,
+    content,
+    // Sem nome nenhum o id cru ainda identifica quem transmite.
+    author: { id: authorId, username: m.author.username ?? authorId }
   };
 }
 function handshakeMarker(sessionId, kind) {
@@ -2486,6 +2742,161 @@ async function stopBroadcast() {
   host.toast("Transmiss\xE3o encerrada", "info");
 }
 
+// host/bd/sounds.ts
+var SOUND_STREAM_STARTED = "stream_started";
+var SOUND_VIEWER_JOINED = "stream_user_joined";
+var PLAY_SOUND_MARKER = "Unable to find sound for pack name";
+var MANGLED_KEYS = ["Ak", "Qh", "aN"];
+function getModule2(filter, options) {
+  return BdApi.Webpack?.getModule?.(filter, options);
+}
+function safeValues(m) {
+  const out = [];
+  try {
+    for (const key of Object.keys(m)) {
+      try {
+        out.push(m[key]);
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return out;
+}
+function isFunction(value) {
+  return typeof value === "function";
+}
+function hasSource(fn, marker) {
+  try {
+    return isFunction(fn) && Function.prototype.toString.call(fn).includes(marker);
+  } catch {
+    return false;
+  }
+}
+var STRATEGIES = [
+  {
+    // Builds em que o export ainda se chama playSound. Barato e exato,
+    // então é o primeiro mesmo sendo o menos provável hoje.
+    name: "playSound-nomeado",
+    resolve() {
+      const mod = getModule2((m) => isFunction(m?.playSound));
+      if (!mod) return null;
+      return (name) => mod.playSound(name, 1);
+    }
+  },
+  {
+    // Mesmo módulo, nome apagado pela minificação: reconhecido pelo aviso
+    // que só ele emite.
+    name: "playSound-por-corpo",
+    resolve() {
+      let found = null;
+      getModule2((m) => {
+        if (typeof m !== "object" || m === null) return false;
+        const fn = safeValues(m).find((v) => hasSource(v, PLAY_SOUND_MARKER));
+        if (!fn) return false;
+        found = fn;
+        return true;
+      });
+      if (!found) return null;
+      return (name) => found(name, 1);
+    }
+  },
+  {
+    // Os nomes mangleados atuais. Exigir o conjunto exato de três chaves,
+    // todas funções, evita casar com qualquer módulo que por acaso tenha um
+    // `Ak` — mas o mangle muda a cada build do Discord, daí vir depois das
+    // buscas que não dependem dele.
+    name: "SoundUtils-mangleado",
+    resolve() {
+      const mod = getModule2((m) => {
+        if (typeof m !== "object" || m === null) return false;
+        const keys = Object.keys(m);
+        return keys.length === MANGLED_KEYS.length && MANGLED_KEYS.every((k) => keys.includes(k)) && MANGLED_KEYS.every((k) => isFunction(m[k]));
+      });
+      if (!mod) return null;
+      return (name) => mod.Ak(name, 1);
+    }
+  },
+  {
+    // Último recurso: a classe crua que o playSound instancia por baixo. O
+    // nome dela sobrevive à minificação, mas usá-la pula o soundpack e o
+    // "desativar sons" — tocaria para quem pediu silêncio. Só vale quando a
+    // alternativa é não achar nada.
+    name: "WebAudioSound",
+    resolve() {
+      const mod = getModule2((m) => isFunction(m?.WebAudioSound)) ?? getModule2((m) => isFunction(m?.WebAudioSound), { searchExports: true });
+      const Sound = mod?.WebAudioSound;
+      if (!Sound) return null;
+      return (name) => {
+        const sound = new Sound(name, name, 1);
+        if (isFunction(sound?.play)) sound.play();
+        else sound?.playWithListener?.();
+      };
+    }
+  }
+];
+var player = null;
+var attempts = 0;
+var MAX_ATTEMPTS = 3;
+function getPlayer() {
+  if (player) return player;
+  if (attempts >= MAX_ATTEMPTS) return null;
+  attempts++;
+  for (const strategy of STRATEGIES) {
+    try {
+      const found = strategy.resolve();
+      if (!found) continue;
+      player = found;
+      recordDiagnostics2(strategy.name, null);
+      return player;
+    } catch (err) {
+      lastError2 = err?.message ?? String(err);
+    }
+  }
+  recordDiagnostics2(null, lastError2 ?? "nenhuma estrat\xE9gia encontrou o m\xF3dulo de som");
+  return null;
+}
+var lastError2 = null;
+function recordDiagnostics2(strategy, error) {
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    fs.writeFileSync(
+      path.join(BdApi.Plugins.folder, "p2pshare-sounds-debug.json"),
+      JSON.stringify({
+        quando: (/* @__PURE__ */ new Date()).toISOString(),
+        estrategiaQueCasou: strategy,
+        tentativas: attempts,
+        // Distingue "achei o módulo certo" de "achei algo parecido":
+        // hoje o esperado é false, porque o export está mangleado.
+        temPlaySoundNomeado: strategy === "playSound-nomeado",
+        sons: {
+          transmissaoIniciada: SOUND_STREAM_STARTED,
+          espectadorEntrou: SOUND_VIEWER_JOINED
+        },
+        erro: error
+      }, null, 2),
+      "utf8"
+    );
+  } catch {
+  }
+}
+function play(name) {
+  try {
+    getPlayer()?.(name);
+  } catch (err) {
+    lastError2 = err?.message ?? String(err);
+    player = null;
+    console.warn("[P2PShare] n\xE3o deu para tocar o som", err);
+  }
+}
+function playStreamStarted() {
+  play(SOUND_STREAM_STARTED);
+}
+function playViewerJoined() {
+  play(SOUND_VIEWER_JOINED);
+}
+
 // updater.ts
 function parseMetaVersion(source) {
   const match = source.match(/@version\s+([^\s*]+)/);
@@ -2519,6 +2930,15 @@ function looksLikePlugin(source, expectedName) {
 // watch.ts
 var beacons = /* @__PURE__ */ new Map();
 var watching = /* @__PURE__ */ new Map();
+var deadBeacons = /* @__PURE__ */ new Map();
+var DEAD_BEACON_TTL_MS = 3 * 60 * 1e3;
+function isDead(messageId) {
+  const when = deadBeacons.get(messageId);
+  if (when === void 0) return false;
+  if (Date.now() - when < DEAD_BEACON_TTL_MS) return true;
+  deadBeacons.delete(messageId);
+  return false;
+}
 var beaconListeners = /* @__PURE__ */ new Set();
 function notifyBeacons() {
   const list = [...beacons.values()];
@@ -2536,6 +2956,46 @@ function isWatching(sessionId) {
 }
 function watchingCount() {
   return watching.size;
+}
+function acceptBeacon(beacon) {
+  if (beacons.has(beacon.messageId)) return;
+  if (isDead(beacon.messageId)) return;
+  beacons.set(beacon.messageId, beacon);
+  notifyBeacons();
+  if (watching.has(beacon.sessionId)) return;
+  host.announceBeacon(
+    { sessionId: beacon.sessionId, broadcasterName: beacon.broadcasterName },
+    () => {
+      void startWatching(beacon);
+    }
+  );
+}
+function forgetBeacon(sessionId) {
+  for (const [messageId, beacon] of beacons) {
+    if (beacon.sessionId !== sessionId) continue;
+    beacons.delete(messageId);
+    deadBeacons.set(messageId, Date.now());
+  }
+  host.revokeBeacon(sessionId);
+}
+async function scanChannelHistory(channelId, limit) {
+  if (!channelId) return 0;
+  let messages;
+  try {
+    messages = await host.fetchRecentMessages(channelId, limit);
+  } catch (err) {
+    console.warn("[P2PShare] n\xE3o deu para varrer o hist\xF3rico do canal", err);
+    return 0;
+  }
+  const found = selectBeacons(messages, {
+    excludeAuthorId: host.getCurrentUserId(),
+    knownMessageIds: [
+      ...beacons.keys(),
+      ...[...deadBeacons.keys()].filter(isDead)
+    ]
+  });
+  for (const beacon of found) acceptBeacon(beacon);
+  return found.length;
 }
 async function startWatching(beacon) {
   if (watching.has(beacon.sessionId)) return;
@@ -2559,6 +3019,7 @@ async function startWatching(beacon) {
   };
   peer.onFailed = (reason) => {
     host.toast(reason, "error");
+    forgetBeacon(beacon.sessionId);
     stopWatching(beacon.sessionId);
   };
   try {
@@ -2566,6 +3027,7 @@ async function startWatching(beacon) {
     host.toast(`Conectando com ${beacon.broadcasterName}\u2026`, "info");
   } catch (err) {
     host.toast(`n\xE3o deu para pedir a transmiss\xE3o: ${err.message}`, "error");
+    forgetBeacon(beacon.sessionId);
     stopWatching(beacon.sessionId);
   }
 }
@@ -2590,14 +3052,7 @@ function initWatcher() {
   const unsubscribe = observeSignals({
     onBeacon: (beacon) => {
       if (beacon.broadcasterId === myId) return;
-      beacons.set(beacon.messageId, beacon);
-      notifyBeacons();
-      host.announceBeacon(
-        { sessionId: beacon.sessionId, broadcasterName: beacon.broadcasterName },
-        () => {
-          void startWatching(beacon);
-        }
-      );
+      acceptBeacon(beacon);
     },
     onBeaconGone: (_channelId, messageId) => {
       const beacon = beacons.get(messageId);
@@ -2616,6 +3071,7 @@ function initWatcher() {
     unsubscribe();
     for (const beacon of beacons.values()) host.revokeBeacon(beacon.sessionId);
     beacons.clear();
+    deadBeacons.clear();
     for (const sessionId of [...watching.keys()]) stopWatching(sessionId);
     host.unmountAllOverlays();
     notifyBeacons();
@@ -2728,6 +3184,8 @@ var P2PShare = class {
   cleanupUpdater = null;
   cleanupVoiceBtn = null;
   cleanupBeacons = null;
+  cleanupBeaconSound = null;
+  cleanupVoice = null;
   start() {
     ui_exports.injectStyles();
     const toggle = (anchor) => {
@@ -2779,10 +3237,33 @@ var P2PShare = class {
       ui_exports.setLiveUsers(users);
     };
     this.cleanupBeacons = onBeaconsChange(refreshLive);
+    const announced = /* @__PURE__ */ new Set();
+    let scanning = false;
+    this.cleanupBeaconSound = onBeaconsChange((beacons2) => {
+      const live = new Set(beacons2.map((b) => b.sessionId));
+      for (const sessionId of live) {
+        if (announced.has(sessionId)) continue;
+        announced.add(sessionId);
+        if (!scanning) playStreamStarted();
+      }
+      for (const sessionId of [...announced]) {
+        if (!live.has(sessionId)) announced.delete(sessionId);
+      }
+    });
+    this.cleanupVoice = onVoiceChannelChange((channelId) => {
+      if (!channelId) return;
+      scanning = true;
+      void scanChannelHistory(channelId).finally(() => {
+        scanning = false;
+      });
+    });
+    let { viewers } = getBroadcastState();
     this.cleanupState = onBroadcastStateChange((state) => {
       ui_exports.updateLauncher(state);
       ui_exports.updateVoiceButton(state);
       refreshLive();
+      if (state.viewers > viewers) playViewerJoined();
+      viewers = state.viewers;
     });
     this.cleanupUpdater = startUpdateChecks();
     void syncHelper();
@@ -2794,6 +3275,10 @@ var P2PShare = class {
     this.cleanupState = null;
     this.cleanupBeacons?.();
     this.cleanupBeacons = null;
+    this.cleanupBeaconSound?.();
+    this.cleanupBeaconSound = null;
+    this.cleanupVoice?.();
+    this.cleanupVoice = null;
     this.cleanupVoiceBtn?.();
     this.cleanupVoiceBtn = null;
     this.cleanupUpdater?.();

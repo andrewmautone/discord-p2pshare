@@ -14,7 +14,12 @@ import {
 } from "./broadcast";
 import { DEFAULT_BUDGET_MBPS } from "./constants";
 import { loadSetting, saveSetting, ui } from "./host/bd";
-import { getCurrentUserId, getCurrentUsername, getUsername } from "./host/bd/api";
+import {
+    getCurrentUserId,
+    getCurrentUsername,
+    getUsername,
+    onVoiceChannelChange
+} from "./host/bd/api";
 import {
     ensureHelper,
     helperError,
@@ -22,8 +27,16 @@ import {
     removeHelper,
     syncHelper
 } from "./host/bd/audioHelper";
+import { playStreamStarted, playViewerJoined } from "./host/bd/sounds";
 import { startUpdateChecks } from "./host/bd/updater";
-import { getActiveBeacons, initWatcher, isWatching, onBeaconsChange, startWatching } from "./watch";
+import {
+    getActiveBeacons,
+    initWatcher,
+    isWatching,
+    onBeaconsChange,
+    scanChannelHistory,
+    startWatching
+} from "./watch";
 
 declare const BdApi: any;
 
@@ -40,6 +53,8 @@ export default class P2PShare {
     private cleanupUpdater: (() => void) | null = null;
     private cleanupVoiceBtn: (() => void) | null = null;
     private cleanupBeacons: (() => void) | null = null;
+    private cleanupBeaconSound: (() => void) | null = null;
+    private cleanupVoice: (() => void) | null = null;
 
     start(): void {
         ui.injectStyles();
@@ -112,10 +127,50 @@ export default class P2PShare {
 
         this.cleanupBeacons = onBeaconsChange(refreshLive);
 
+        // Sessões que já anunciei com som, para tocar uma vez por transmissão
+        // e não a cada repintura da lista.
+        const announced = new Set<string>();
+
+        // Uma varredura do histórico descobre transmissões que já estavam no
+        // ar antes de eu chegar. Tocar o som nelas seria anunciar como novo
+        // algo que começou sem mim — o Discord toca quando a transmissão
+        // começa, não quando você repara nela.
+        let scanning = false;
+
+        this.cleanupBeaconSound = onBeaconsChange(beacons => {
+            const live = new Set(beacons.map(b => b.sessionId));
+
+            for (const sessionId of live) {
+                if (announced.has(sessionId)) continue;
+                announced.add(sessionId);
+
+                if (!scanning) playStreamStarted();
+            }
+
+            for (const sessionId of [...announced]) {
+                if (!live.has(sessionId)) announced.delete(sessionId);
+            }
+        });
+
+        // Quem entra no canal depois do início da transmissão nunca viu o
+        // beacon passar: ele só existe como mensagem antiga no chat.
+        this.cleanupVoice = onVoiceChannelChange(channelId => {
+            if (!channelId) return;
+
+            scanning = true;
+            void scanChannelHistory(channelId).finally(() => { scanning = false; });
+        });
+
+        // Só o transmissor ouve alguém entrando — é ele que precisa saber.
+        let { viewers } = getBroadcastState();
+
         this.cleanupState = onBroadcastStateChange(state => {
             ui.updateLauncher(state);
             ui.updateVoiceButton(state);
             refreshLive();
+
+            if (state.viewers > viewers) playViewerJoined();
+            viewers = state.viewers;
         });
 
         // Não bloqueia o start: se o host estiver fora do ar, o plugin sobe igual.
@@ -138,6 +193,12 @@ export default class P2PShare {
 
         this.cleanupBeacons?.();
         this.cleanupBeacons = null;
+
+        this.cleanupBeaconSound?.();
+        this.cleanupBeaconSound = null;
+
+        this.cleanupVoice?.();
+        this.cleanupVoice = null;
 
         this.cleanupVoiceBtn?.();
         this.cleanupVoiceBtn = null;
