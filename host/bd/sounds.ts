@@ -97,6 +97,13 @@ function hasSource(fn: any, marker: string): boolean {
  * o que casa por nome ou por corpo de função vem antes do que casa por formato,
  * e o caminho que ignora as preferências do usuário fica por último.
  */
+/**
+ * Fica de fora daqui a classe `WebAudioSound`, que o playSound instancia por
+ * baixo. O nome dela sobrevive à minificação e seria uma quarta rede, mas
+ * usá-la pula o soundpack e o "desativar sons" — tocaria para quem pediu
+ * silêncio. Quando a alternativa é desrespeitar essa escolha, não tocar é a
+ * resposta certa.
+ */
 const STRATEGIES: Strategy[] = [
     {
         // Builds em que o export ainda se chama playSound. Barato e exato,
@@ -150,28 +157,6 @@ const STRATEGIES: Strategy[] = [
             if (!mod) return null;
 
             return name => mod.Ak(name, 1);
-        }
-    },
-    {
-        // Último recurso: a classe crua que o playSound instancia por baixo. O
-        // nome dela sobrevive à minificação, mas usá-la pula o soundpack e o
-        // "desativar sons" — tocaria para quem pediu silêncio. Só vale quando a
-        // alternativa é não achar nada.
-        name: "WebAudioSound",
-        resolve() {
-            const mod = getModule((m: any) => isFunction(m?.WebAudioSound))
-                ?? getModule((m: any) => isFunction(m?.WebAudioSound), { searchExports: true });
-
-            const Sound = mod?.WebAudioSound;
-            if (!Sound) return null;
-
-            return name => {
-                // Sem soundpack, id e nome do som são o mesmo literal — que é o
-                // que o pack "classic" faria de todo modo.
-                const sound = new Sound(name, name, 1);
-                if (isFunction(sound?.play)) sound.play();
-                else sound?.playWithListener?.();
-            };
         }
     }
 ];
@@ -273,4 +258,20 @@ export function playStreamStarted(): void {
 /** Alguém entrou para assistir à minha transmissão. */
 export function playViewerJoined(): void {
     play(SOUND_VIEWER_JOINED);
+}
+
+/**
+ * Resolve o tocador antes do primeiro som.
+ *
+ * A estratégia que casa no Discord atual varre os módulos chamando `toString`
+ * em cada export — caro, e pago inteiro na primeira chamada. Pagar isso no
+ * instante em que a transmissão começa atrasaria justamente o som que deveria
+ * marcar aquele instante.
+ *
+ * De brinde, é o que faz o diagnóstico existir antes de alguém transmitir.
+ */
+export function warmSounds(): void {
+    try {
+        getPlayer();
+    } catch { /* aquecer nunca pode atrapalhar a subida do plugin */ }
 }

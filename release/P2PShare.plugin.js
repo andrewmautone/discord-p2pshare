@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.17.0
+ * @version 1.17.1
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.17.0";
+var PLUGIN_VERSION = "1.17.1";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
@@ -2816,23 +2816,6 @@ var STRATEGIES = [
       if (!mod) return null;
       return (name) => mod.Ak(name, 1);
     }
-  },
-  {
-    // Último recurso: a classe crua que o playSound instancia por baixo. O
-    // nome dela sobrevive à minificação, mas usá-la pula o soundpack e o
-    // "desativar sons" — tocaria para quem pediu silêncio. Só vale quando a
-    // alternativa é não achar nada.
-    name: "WebAudioSound",
-    resolve() {
-      const mod = getModule2((m) => isFunction(m?.WebAudioSound)) ?? getModule2((m) => isFunction(m?.WebAudioSound), { searchExports: true });
-      const Sound = mod?.WebAudioSound;
-      if (!Sound) return null;
-      return (name) => {
-        const sound = new Sound(name, name, 1);
-        if (isFunction(sound?.play)) sound.play();
-        else sound?.playWithListener?.();
-      };
-    }
   }
 ];
 var player = null;
@@ -2895,6 +2878,12 @@ function playStreamStarted() {
 }
 function playViewerJoined() {
   play(SOUND_VIEWER_JOINED);
+}
+function warmSounds() {
+  try {
+    getPlayer();
+  } catch {
+  }
 }
 
 // updater.ts
@@ -3267,6 +3256,7 @@ var P2PShare = class {
     });
     this.cleanupUpdater = startUpdateChecks();
     void syncHelper();
+    setTimeout(warmSounds, 5e3);
     setTimeout(() => ui_exports.dumpVoiceDiagnostics(), 8e3);
   }
   stop() {

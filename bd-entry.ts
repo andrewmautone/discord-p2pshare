@@ -27,7 +27,7 @@ import {
     removeHelper,
     syncHelper
 } from "./host/bd/audioHelper";
-import { playStreamStarted, playViewerJoined } from "./host/bd/sounds";
+import { playStreamStarted, playViewerJoined, warmSounds } from "./host/bd/sounds";
 import { startUpdateChecks } from "./host/bd/updater";
 import {
     getActiveBeacons,
@@ -180,6 +180,11 @@ export default class P2PShare {
         // Instala ou atualiza o componente de áudio em segundo plano. É o
         // caminho por onde quem vinha de uma versão sem ele passa a tê-lo.
         void syncHelper();
+
+        // O módulo de som é caro de achar e o Discord ainda está montando os
+        // seus quando o plugin sobe. Achar agora tira esse custo do instante
+        // em que a transmissão começa.
+        setTimeout(warmSounds, 5000);
 
         // Dá tempo do painel de voz renderizar antes de fotografar o estado.
         setTimeout(() => ui.dumpVoiceDiagnostics(), 8000);
