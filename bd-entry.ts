@@ -27,7 +27,12 @@ import {
     removeHelper,
     syncHelper
 } from "./host/bd/audioHelper";
-import { playStreamStarted, playViewerJoined, warmSounds } from "./host/bd/sounds";
+import {
+    playStreamStarted,
+    playStreamStopped,
+    playViewerJoined,
+    warmSounds
+} from "./host/bd/sounds";
 import { startUpdateChecks } from "./host/bd/updater";
 import {
     getActiveBeacons,
@@ -148,7 +153,10 @@ export default class P2PShare {
             }
 
             for (const sessionId of [...announced]) {
-                if (!live.has(sessionId)) announced.delete(sessionId);
+                if (live.has(sessionId)) continue;
+
+                announced.delete(sessionId);
+                playStreamStopped();
             }
         });
 
@@ -175,6 +183,7 @@ export default class P2PShare {
             // quem começou. Aqui é o único lugar que sabe da minha própria
             // transmissão.
             if (state.active && !active) playStreamStarted();
+            if (!state.active && active) playStreamStopped();
             active = state.active;
 
             if (state.viewers > viewers) playViewerJoined();

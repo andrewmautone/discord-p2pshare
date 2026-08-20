@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.17.3
+ * @version 1.18.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.17.3";
+var PLUGIN_VERSION = "1.18.0";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
@@ -2755,6 +2755,7 @@ async function stopBroadcast() {
 // host/bd/sounds.ts
 var SOUND_STREAM_STARTED = "stream_started";
 var SOUND_VIEWER_JOINED = "stream_user_joined";
+var SOUND_STREAM_ENDED = "stream_ended";
 var PLAY_SOUND_MARKER = "Unable to find sound for pack name";
 var MANGLED_KEYS = ["Ak", "Qh", "aN"];
 function getModule2(filter, options) {
@@ -2865,6 +2866,7 @@ function recordDiagnostics2(strategy, error) {
         temPlaySoundNomeado: strategy === "playSound-nomeado",
         sons: {
           transmissaoIniciada: SOUND_STREAM_STARTED,
+          transmissaoEncerrada: SOUND_STREAM_ENDED,
           espectadorEntrou: SOUND_VIEWER_JOINED
         },
         erro: error
@@ -2888,6 +2890,9 @@ function playStreamStarted() {
 }
 function playViewerJoined() {
   play(SOUND_VIEWER_JOINED);
+}
+function playStreamStopped() {
+  play(SOUND_STREAM_ENDED);
 }
 function warmSounds() {
   try {
@@ -3246,7 +3251,9 @@ var P2PShare = class {
         if (!scanning) playStreamStarted();
       }
       for (const sessionId of [...announced]) {
-        if (!live.has(sessionId)) announced.delete(sessionId);
+        if (live.has(sessionId)) continue;
+        announced.delete(sessionId);
+        playStreamStopped();
       }
     });
     this.cleanupVoice = onVoiceChannelChange((channelId) => {
@@ -3262,6 +3269,7 @@ var P2PShare = class {
       ui_exports.updateVoiceButton(state);
       refreshLive();
       if (state.active && !active) playStreamStarted();
+      if (!state.active && active) playStreamStopped();
       active = state.active;
       if (state.viewers > viewers) playViewerJoined();
       viewers = state.viewers;

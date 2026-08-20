@@ -31,6 +31,7 @@ declare const BdApi: any;
  */
 const SOUND_STREAM_STARTED = "stream_started";
 const SOUND_VIEWER_JOINED = "stream_user_joined";
+const SOUND_STREAM_ENDED = "stream_ended";
 
 /**
  * Marca do playSound minificado.
@@ -229,6 +230,7 @@ function recordDiagnostics(strategy: string | null, error: string | null): void 
                 temPlaySoundNomeado: strategy === "playSound-nomeado",
                 sons: {
                     transmissaoIniciada: SOUND_STREAM_STARTED,
+                    transmissaoEncerrada: SOUND_STREAM_ENDED,
                     espectadorEntrou: SOUND_VIEWER_JOINED
                 },
                 erro: error
@@ -258,6 +260,11 @@ export function playStreamStarted(): void {
 /** Alguém entrou para assistir à minha transmissão. */
 export function playViewerJoined(): void {
     play(SOUND_VIEWER_JOINED);
+}
+
+/** Uma transmissão do canal terminou. */
+export function playStreamStopped(): void {
+    play(SOUND_STREAM_ENDED);
 }
 
 /**
