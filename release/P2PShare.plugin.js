@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.17.1
+ * @version 1.17.2
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.17.1";
+var PLUGIN_VERSION = "1.17.2";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
@@ -1417,17 +1417,27 @@ function mountVoiceButton(opts) {
   };
   sync();
   let queued = false;
+  let fallback = null;
+  const run = () => {
+    queued = false;
+    if (fallback !== null) {
+      clearTimeout(fallback);
+      fallback = null;
+    }
+    sync();
+  };
   const schedule = () => {
     if (queued) return;
     queued = true;
-    requestAnimationFrame(() => {
-      queued = false;
-      sync();
-    });
+    requestAnimationFrame(run);
+    fallback = setTimeout(run, 250);
   };
   voiceObserver = new MutationObserver(schedule);
   voiceObserver.observe(document.body, { childList: true, subtree: true });
+  const heartbeat = setInterval(sync, 1e3);
   return () => {
+    clearInterval(heartbeat);
+    if (fallback !== null) clearTimeout(fallback);
     voiceObserver?.disconnect();
     voiceObserver = null;
     for (const btn of voiceBtns.values()) removeBtn(btn);

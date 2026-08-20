@@ -728,20 +728,47 @@ export function mountVoiceButton(opts: {
     sync();
 
     // O Discord muta o DOM o tempo todo: junta tudo num sync por quadro.
+    //
+    // O quadro nao vem sempre: `requestAnimationFrame` fica parado enquanto a
+    // janela esta escondida ou em segundo plano. Sem a rede de seguranca
+    // abaixo, um sync pedido nesse periodo so' rodaria quando a janela
+    // voltasse a aparecer — e ate' la' a tela mostra o estado antigo.
     let queued = false;
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+
+    const run = () => {
+        queued = false;
+        if (fallback !== null) {
+            clearTimeout(fallback);
+            fallback = null;
+        }
+        sync();
+    };
+
     const schedule = () => {
         if (queued) return;
         queued = true;
-        requestAnimationFrame(() => {
-            queued = false;
-            sync();
-        });
+
+        requestAnimationFrame(run);
+        fallback = setTimeout(run, 250);
     };
 
     voiceObserver = new MutationObserver(schedule);
     voiceObserver.observe(document.body, { childList: true, subtree: true });
 
+    // Nem toda transicao passa pelo DOM que observamos. Fechar a janela da
+    // transmissao, sair de uma chamada, o Discord trocar de tela por dentro:
+    // se nada mutar aqui, o observador nunca acorda e o estado congela no que
+    // era antes — o flutuante fica escondido por um botao que ja' nao existe.
+    //
+    // Uma verificacao periodica e' o que garante convergencia: custa uma
+    // varredura por segundo e faz a tela sempre reencontrar a verdade.
+    const heartbeat = setInterval(sync, 1000);
+
     return () => {
+        clearInterval(heartbeat);
+        if (fallback !== null) clearTimeout(fallback);
+
         voiceObserver?.disconnect();
         voiceObserver = null;
         for (const btn of voiceBtns.values()) removeBtn(btn);
