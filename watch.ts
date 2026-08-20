@@ -82,13 +82,57 @@ function acceptBeacon(beacon: Beacon): void {
     beacons.set(beacon.messageId, beacon);
     notifyBeacons();
 
-    // Já estou vendo esta transmissão: o aviso só atrapalharia.
-    if (watching.has(beacon.sessionId)) return;
+    syncBeaconNotices();
+}
 
-    host.announceBeacon(
-        { sessionId: beacon.sessionId, broadcasterName: beacon.broadcasterName },
-        () => { void startWatching(beacon); }
-    );
+/**
+ * Deixa os avisos de acordo com o canal em que estou agora.
+ *
+ * O beacon chega por evento de mensagem, e o Discord entrega mensagens de
+ * todo canal visível — não só do canal em que estou. Sem esta regra, uma
+ * transmissão em outra sala fazia barulho e abria a barra no topo de quem
+ * nem estava lá.
+ *
+ * O selo AO VIVO continua aparecendo de fora: ver que existe transmissão é
+ * diferente de ser chamado para ela.
+ *
+ * Idempotente de propósito: é chamada quando chega beacon, quando troco de
+ * canal e depois de varrer o histórico, e as três precisam convergir para o
+ * mesmo resultado.
+ */
+function syncBeaconNotices(): void {
+    const current = host.getVoiceChannelId();
+
+    for (const beacon of beacons.values()) {
+        const aqui = current !== null && beacon.channelId === current;
+
+        if (aqui && !watching.has(beacon.sessionId)) {
+            host.announceBeacon(
+                { sessionId: beacon.sessionId, broadcasterName: beacon.broadcasterName },
+                () => { void startWatching(beacon); }
+            );
+        } else {
+            // Saí do canal, ou já estou vendo: o aviso perdeu a função.
+            host.revokeBeacon(beacon.sessionId);
+        }
+    }
+}
+
+/**
+ * Reavalia os avisos depois de entrar ou sair de um canal.
+ *
+ * Entrar numa sala onde já havia transmissão precisa acender o aviso, e o
+ * beacon pode já estar guardado de antes — nesse caso nada de novo chega, e
+ * sem este empurrão a barra nunca apareceria.
+ */
+export function refreshBeaconNotices(): void {
+    syncBeaconNotices();
+}
+
+/** Uma transmissão está no canal em que estou agora? */
+export function beaconIsHere(beacon: Beacon): boolean {
+    const current = host.getVoiceChannelId();
+    return current !== null && beacon.channelId === current;
 }
 
 /**

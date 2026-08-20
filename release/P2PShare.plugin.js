@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.20.0
+ * @version 1.20.1
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 "use strict";
@@ -129,7 +129,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.20.0";
+var PLUGIN_VERSION = "1.20.1";
 var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
@@ -3139,13 +3139,30 @@ function acceptBeacon(beacon) {
   if (isDead(beacon.messageId)) return;
   beacons.set(beacon.messageId, beacon);
   notifyBeacons();
-  if (watching.has(beacon.sessionId)) return;
-  host.announceBeacon(
-    { sessionId: beacon.sessionId, broadcasterName: beacon.broadcasterName },
-    () => {
-      void startWatching(beacon);
+  syncBeaconNotices();
+}
+function syncBeaconNotices() {
+  const current = host.getVoiceChannelId();
+  for (const beacon of beacons.values()) {
+    const aqui = current !== null && beacon.channelId === current;
+    if (aqui && !watching.has(beacon.sessionId)) {
+      host.announceBeacon(
+        { sessionId: beacon.sessionId, broadcasterName: beacon.broadcasterName },
+        () => {
+          void startWatching(beacon);
+        }
+      );
+    } else {
+      host.revokeBeacon(beacon.sessionId);
     }
-  );
+  }
+}
+function refreshBeaconNotices() {
+  syncBeaconNotices();
+}
+function beaconIsHere(beacon) {
+  const current = host.getVoiceChannelId();
+  return current !== null && beacon.channelId === current;
 }
 function forgetBeacon(sessionId) {
   for (const [messageId, beacon] of beacons) {
@@ -3418,7 +3435,9 @@ var P2PShare = class {
     const announced = /* @__PURE__ */ new Set();
     let scanning = false;
     this.cleanupBeaconSound = onBeaconsChange((beacons2) => {
-      const live = new Set(beacons2.map((b) => b.sessionId));
+      const live = new Set(
+        beacons2.filter(beaconIsHere).map((b) => b.sessionId)
+      );
       for (const sessionId of live) {
         if (announced.has(sessionId)) continue;
         announced.add(sessionId);
@@ -3431,9 +3450,10 @@ var P2PShare = class {
       }
     });
     this.cleanupVoice = onVoiceChannelChange((channelId) => {
+      refreshBeaconNotices();
       if (!channelId) return;
       scanning = true;
-      void scanChannelHistory(channelId).finally(() => {
+      void scanChannelHistory(channelId).then(refreshBeaconNotices).finally(() => {
         scanning = false;
       });
     });

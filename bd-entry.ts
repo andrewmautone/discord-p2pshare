@@ -36,10 +36,12 @@ import {
 } from "./host/bd/sounds";
 import { startUpdateChecks } from "./host/bd/updater";
 import {
+    beaconIsHere,
     getActiveBeacons,
     initWatcher,
     isWatching,
     onBeaconsChange,
+    refreshBeaconNotices,
     scanChannelHistory,
     startWatching
 } from "./watch";
@@ -145,7 +147,12 @@ export default class P2PShare {
         let scanning = false;
 
         this.cleanupBeaconSound = onBeaconsChange(beacons => {
-            const live = new Set(beacons.map(b => b.sessionId));
+            // Transmissão de outra sala não me chama: o Discord entrega
+            // mensagem de todo canal visível, e sem este filtro o som tocava
+            // por gente que eu nem estava acompanhando.
+            const live = new Set(
+                beacons.filter(beaconIsHere).map(b => b.sessionId)
+            );
 
             for (const sessionId of live) {
                 if (announced.has(sessionId)) continue;
@@ -165,10 +172,16 @@ export default class P2PShare {
         // Quem entra no canal depois do início da transmissão nunca viu o
         // beacon passar: ele só existe como mensagem antiga no chat.
         this.cleanupVoice = onVoiceChannelChange(channelId => {
+            // Sair da sala apaga os avisos de lá; entrar acende os de cá.
+            // Vale também para channelId nulo, que é a desconexão.
+            refreshBeaconNotices();
+
             if (!channelId) return;
 
             scanning = true;
-            void scanChannelHistory(channelId).finally(() => { scanning = false; });
+            void scanChannelHistory(channelId)
+                .then(refreshBeaconNotices)
+                .finally(() => { scanning = false; });
         });
 
         // Só o transmissor ouve alguém entrando — é ele que precisa saber.
