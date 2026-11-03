@@ -2,10 +2,9 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.20.1
+ * @version 1.21.0
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
-"use strict";
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -22,7 +21,7 @@ var __copyProps = (to, from, except, desc) => {
   }
   return to;
 };
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var __toCommonJS = (mod2) => __copyProps(__defProp({}, "__esModule", { value: true }), mod2);
 
 // bd-entry.ts
 var bd_entry_exports = {};
@@ -129,8 +128,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.20.1";
-var DOWNLOAD_URL = "https://github.com/andrewmautone/discord-p2pshare/releases/latest/download/P2PShare-Setup.exe";
+var PLUGIN_VERSION = "1.21.0";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "f78221d17c22d2cdc8c4067a9c27e8791c78f88eda70561258b1b80f235936e5";
@@ -151,62 +149,17 @@ var DEFAULT_BUDGET_MBPS = 15;
 var ICE_GATHER_TIMEOUT_MS = 4e3;
 var PEER_CONNECT_TIMEOUT_MS = 3e4;
 var PEER_DROP_GRACE_MS = 12e3;
-var HANDSHAKE_TTL_MS = 2e4;
+var RELAYS = [
+  "wss://relay.damus.io",
+  "wss://nos.lol",
+  "wss://relay.primal.net",
+  "wss://nostr.mom",
+  "wss://relay.snort.social",
+  "wss://offchain.pub"
+];
 
 // codec.ts
 var DIGIT_INDEX = new Map(ZW_DIGITS.map((c, i) => [c, i]));
-function encodeZeroWidth(text) {
-  const bytes = new TextEncoder().encode(text);
-  let out = "";
-  for (const byte of bytes) {
-    out += ZW_DIGITS[byte >> 6 & 3];
-    out += ZW_DIGITS[byte >> 4 & 3];
-    out += ZW_DIGITS[byte >> 2 & 3];
-    out += ZW_DIGITS[byte & 3];
-  }
-  return out;
-}
-function decodeZeroWidth(zw) {
-  const chars = [...zw];
-  if (chars.length % 4 !== 0) throw new Error("comprimento zero-width inv\xE1lido");
-  const bytes = new Uint8Array(chars.length / 4);
-  for (let i = 0; i < bytes.length; i++) {
-    let byte = 0;
-    for (let j = 0; j < 4; j++) {
-      const digit = DIGIT_INDEX.get(chars[i * 4 + j]);
-      if (digit === void 0) throw new Error("caractere zero-width inv\xE1lido");
-      byte = byte << 2 | digit;
-    }
-    bytes[i] = byte;
-  }
-  return new TextDecoder().decode(bytes);
-}
-function embedPayload(visible, payload) {
-  return visible + ZW_DELIM + encodeZeroWidth(JSON.stringify(payload)) + ZW_DELIM;
-}
-function extractPayload(content) {
-  const start = content.indexOf(ZW_DELIM);
-  if (start === -1) return null;
-  const end = content.indexOf(ZW_DELIM, start + 1);
-  if (end === -1) return null;
-  try {
-    return JSON.parse(decodeZeroWidth(content.slice(start + 1, end)));
-  } catch {
-    return null;
-  }
-}
-function formatHandshakeName(n) {
-  return `p2p.${n.sessionId}.${n.kind}.${n.targetUserId}.txt`;
-}
-function parseHandshakeName(filename) {
-  const parts2 = filename.split(".");
-  if (parts2.length !== 5) return null;
-  const [prefix, sessionId, kind, targetUserId, ext] = parts2;
-  if (prefix !== "p2p" || ext !== "txt") return null;
-  if (kind !== "offer" && kind !== "answer") return null;
-  if (!sessionId || !targetUserId) return null;
-  return { sessionId, kind, targetUserId };
-}
 function newSessionId() {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);
@@ -215,7 +168,20 @@ function newSessionId() {
 
 // host/bd/api.ts
 var { getModule } = BdApi.Webpack;
-function lookup(filter) {
+function isImpostor(m) {
+  try {
+    if (m === window || m === document) return true;
+    if (m?.[Symbol.toStringTag] === "IntlMessagesProxy") return true;
+    return m != null && typeof m === "object" && m["__p2pshare_inexistente__"] !== void 0;
+  } catch {
+    return true;
+  }
+}
+function guard(filter) {
+  return (m) => !isImpostor(m) && filter(m);
+}
+function lookup(rawFilter) {
+  const filter = guard(rawFilter);
   let found = getModule(filter);
   if (found === void 0) {
     found = getModule(filter, { searchExports: true });
@@ -279,6 +245,13 @@ var MessageStore = findOptional(
 function nonce() {
   const DISCORD_EPOCH = 1420070400000n;
   return (BigInt(Date.now()) - DISCORD_EPOCH << 22n).toString();
+}
+function hasCurrentUser() {
+  try {
+    return Boolean(UserStore().getCurrentUser()?.id);
+  } catch {
+    return false;
+  }
 }
 function getCurrentUserId() {
   return UserStore().getCurrentUser().id;
@@ -450,6 +423,132 @@ function onMessageDelete(handler) {
   };
   FluxDispatcher().subscribe("MESSAGE_DELETE", listener);
   return () => FluxDispatcher().unsubscribe("MESSAGE_DELETE", listener);
+}
+function byStoreName(name) {
+  return (m) => typeof m?.getName === "function" && m.getName() === name;
+}
+var SelectedGuildStore = findOptional(byStoreName("SelectedGuildStore"));
+var GuildChannelStore = findOptional(byStoreName("GuildChannelStore"));
+var ChannelStore = findOptional(byStoreName("ChannelStore"));
+var VoiceStateStore = findOptional(byStoreName("VoiceStateStore"));
+function getSelectedGuildId() {
+  try {
+    return SelectedGuildStore()?.getGuildId?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+function getChannelGuildId(channelId) {
+  try {
+    return ChannelStore()?.getChannel?.(channelId)?.guild_id ?? null;
+  } catch {
+    return null;
+  }
+}
+function getGuildVoiceChannelIds(guildId) {
+  try {
+    const groups = GuildChannelStore()?.getChannels?.(guildId);
+    const vocal = groups?.VOCAL ?? [];
+    return vocal.map((entry) => entry?.channel?.id ?? entry?.id).filter((id) => typeof id === "string");
+  } catch {
+    return [];
+  }
+}
+function isUserInVoiceChannel(userId, channelId) {
+  try {
+    const states = VoiceStateStore()?.getVoiceStatesForChannel?.(channelId);
+    if (!states) return false;
+    if (states instanceof Map) return states.has(userId);
+    if (Array.isArray(states)) return states.some((s) => (s?.userId ?? s?.user_id) === userId);
+    if (userId in states) return true;
+    return Object.values(states).some((s) => (s?.userId ?? s?.user_id) === userId);
+  } catch {
+    return false;
+  }
+}
+function onNavigationChange(handler) {
+  const events = ["CHANNEL_SELECT", "GUILD_CREATE", "CHANNEL_CREATE", "CHANNEL_DELETE", "VOICE_STATE_UPDATES"];
+  const listener = () => {
+    try {
+      handler();
+    } catch (err) {
+      console.error("[P2PShare] handler de navega\xE7\xE3o falhou", err);
+    }
+  };
+  for (const e of events) FluxDispatcher().subscribe(e, listener);
+  return () => {
+    for (const e of events) FluxDispatcher().unsubscribe(e, listener);
+  };
+}
+var nativeSockets = /* @__PURE__ */ new Map();
+var nativeHooked = false;
+function nativeRelay() {
+  const relay = globalThis.P2PShareNative?.relay;
+  if (!relay) return null;
+  if (!nativeHooked) {
+    nativeHooked = true;
+    relay.onEvent((id, type, data) => {
+      const s = nativeSockets.get(id);
+      if (!s) return;
+      if (type === "open") s.onopen?.();
+      else if (type === "message") s.onmessage?.(String(data ?? ""));
+      else if (type === "close") {
+        nativeSockets.delete(id);
+        s.onclose?.();
+      }
+    });
+  }
+  return relay;
+}
+function openRelaySocket(url) {
+  const native = nativeRelay();
+  if (native) {
+    let id = null;
+    let closed = false;
+    const socket2 = {
+      onopen: null,
+      onmessage: null,
+      onclose: null,
+      send: (data) => {
+        if (id !== null) native.send(id, data);
+      },
+      close: () => {
+        closed = true;
+        if (id !== null) {
+          native.close(id);
+          nativeSockets.delete(id);
+        }
+      }
+    };
+    native.open(url).then(
+      (got) => {
+        id = got;
+        if (closed) {
+          native.close(got);
+          return;
+        }
+        nativeSockets.set(got, socket2);
+      },
+      () => setTimeout(() => socket2.onclose?.(), 0)
+    );
+    return socket2;
+  }
+  const ws = new WebSocket(url);
+  const socket = {
+    onopen: null,
+    onmessage: null,
+    onclose: null,
+    send: (data) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    },
+    close: () => ws.close()
+  };
+  ws.onopen = () => socket.onopen?.();
+  ws.onmessage = (e) => socket.onmessage?.(String(e.data));
+  ws.onclose = () => socket.onclose?.();
+  ws.onerror = () => {
+  };
+  return socket;
 }
 
 // binary.ts
@@ -1698,7 +1797,7 @@ function removeSidebarBadges() {
 }
 function currentUserId() {
   try {
-    return BdApi.Webpack.getModule((m) => m?.getCurrentUser && m?.getUser)?.getCurrentUser()?.id ?? null;
+    return BdApi.Webpack.getModule((m) => !isImpostor(m) && m?.getCurrentUser && m?.getUser)?.getCurrentUser()?.id ?? null;
   } catch {
     return null;
   }
@@ -2311,6 +2410,12 @@ var host = {
   onMessageCreate,
   onMessageDelete,
   onVoiceChannelChange,
+  openRelaySocket,
+  getSelectedGuildId,
+  getChannelGuildId,
+  getGuildVoiceChannelIds,
+  isUserInVoiceChannel,
+  onNavigationChange,
   toast: (message, kind) => BdApi.UI.showToast(message, { type: TOAST_TYPE[kind] }),
   getBudgetMbps: () => loadSetting("uploadBudgetMbps", DEFAULT_BUDGET_MBPS),
   shouldCaptureAudio: () => loadSetting("captureAudio", true),
@@ -2321,9 +2426,7 @@ var host = {
   unmountOverlay,
   unmountAllOverlays,
   setOverlayViewers,
-  setLiveUsers,
-  announceBeacon,
-  revokeBeacon
+  setLiveUsers
 };
 
 // peers.ts
@@ -2351,8 +2454,6 @@ var BroadcastPeers = class {
     this.auto = opts.auto ?? true;
     this.createPeer = opts.createPeer ?? defaultFactory;
   }
-  stream;
-  transport;
   peers = /* @__PURE__ */ new Map();
   createPeer;
   budgetMbps;
@@ -2499,9 +2600,6 @@ var ViewerPeer = class {
     this.broadcasterId = broadcasterId;
     this.opts = opts;
   }
-  transport;
-  broadcasterId;
-  opts;
   pc = null;
   connectTimer = null;
   dropTimer = null;
@@ -2592,156 +2690,645 @@ var ViewerPeer = class {
   }
 };
 
-// beacon.ts
-function beaconContent(sessionId, username) {
-  const visible = `# \u{1F534} ${username} est\xE1 transmitindo a tela
-**J\xE1 tem o P2PShare?** Clique em **AO VIVO** no quadro dele na chamada e a tela abre por cima do avatar.
-**Ainda n\xE3o tem?** [Baixar o instalador](${DOWNLOAD_URL})
--# V\xEDdeo ponto-a-ponto, direto entre os computadores. N\xE3o passa por servidor nenhum.`;
-  return embedPayload(visible, { v: PROTOCOL_VERSION, s: sessionId });
-}
-function parseBeacon(message) {
-  const payload = extractPayload(message.content);
-  if (!payload || payload.v !== PROTOCOL_VERSION) return null;
-  if (typeof payload.s !== "string") return null;
-  if (payload.k !== void 0) return null;
-  return {
-    messageId: message.id,
-    channelId: message.channel_id,
-    sessionId: payload.s,
-    broadcasterId: message.author.id,
-    broadcasterName: message.author.username
-  };
-}
-function selectBeacons(messages, opts = {}) {
-  const seen = new Set(opts.knownMessageIds ?? []);
-  const found = [];
-  for (const raw of messages) {
-    const source = toBeaconSource(raw);
-    if (!source || seen.has(source.id)) continue;
-    seen.add(source.id);
-    const beacon = parseBeacon(source);
-    if (!beacon) continue;
-    if (beacon.broadcasterId === opts.excludeAuthorId) continue;
-    found.push(beacon);
+// nostr/schnorr.ts
+var P = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
+var N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+var GX = 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n;
+var GY = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8n;
+var mod = (a, m = P) => {
+  const r = a % m;
+  return r >= 0n ? r : r + m;
+};
+function pow(base, exp, m = P) {
+  let result = 1n;
+  base = mod(base, m);
+  while (exp > 0n) {
+    if (exp & 1n) result = result * base % m;
+    base = base * base % m;
+    exp >>= 1n;
   }
-  return found;
+  return result;
 }
-function toBeaconSource(raw) {
-  const m = raw;
-  const id = m?.id;
-  const content = m?.content;
-  const authorId = m?.author?.id;
-  const channelId = m?.channel_id ?? m?.channelId;
-  if (typeof id !== "string") return null;
-  if (typeof content !== "string") return null;
-  if (typeof authorId !== "string") return null;
-  if (typeof channelId !== "string") return null;
-  return {
-    id,
-    channel_id: channelId,
-    content,
-    // Sem nome nenhum o id cru ainda identifica quem transmite.
-    author: { id: authorId, username: m.author.username ?? authorId }
-  };
+var inv = (a) => pow(a, P - 2n);
+var INF = [0n, 1n, 0n];
+function dbl([x, y, z]) {
+  if (z === 0n || y === 0n) return INF;
+  const ysq = mod(y * y);
+  const s = mod(4n * x * ysq);
+  const m = mod(3n * x * x);
+  const nx = mod(m * m - 2n * s);
+  const ny = mod(m * (s - nx) - 8n * ysq * ysq);
+  const nz = mod(2n * y * z);
+  return [nx, ny, nz];
 }
-function handshakeMarker(sessionId, kind) {
-  return embedPayload("", { v: PROTOCOL_VERSION, s: sessionId, k: kind });
+function add(p, q) {
+  if (p[2] === 0n) return q;
+  if (q[2] === 0n) return p;
+  const [x1, y1, z1] = p;
+  const [x2, y2, z2] = q;
+  const z1z1 = mod(z1 * z1), z2z2 = mod(z2 * z2);
+  const u1 = mod(x1 * z2z2), u2 = mod(x2 * z1z1);
+  const s1 = mod(y1 * z2 * z2z2), s2 = mod(y2 * z1 * z1z1);
+  if (u1 === u2) return s1 === s2 ? dbl(p) : INF;
+  const h = mod(u2 - u1), r = mod(s2 - s1);
+  const hh = mod(h * h), hhh = mod(h * hh);
+  const v = mod(u1 * hh);
+  const nx = mod(r * r - hhh - 2n * v);
+  const ny = mod(r * (v - nx) - s1 * hhh);
+  const nz = mod(h * z1 * z2);
+  return [nx, ny, nz];
 }
-function handshakeBody(kind, sdp) {
-  return JSON.stringify({ v: PROTOCOL_VERSION, type: kind, sdp });
+function mul(k, point) {
+  let r = INF;
+  let q = point;
+  while (k > 0n) {
+    if (k & 1n) r = add(r, q);
+    q = dbl(q);
+    k >>= 1n;
+  }
+  return r;
 }
-function parseHandshakeBody(text) {
-  let body;
+function affine([x, y, z]) {
+  if (z === 0n) return null;
+  const zi = inv(z), zi2 = mod(zi * zi);
+  return [mod(x * zi2), mod(y * zi2 * zi)];
+}
+var G = [GX, GY, 1n];
+function liftX(x) {
+  if (x >= P) return null;
+  const c = mod(x * x * x + 7n);
+  const y = pow(c, (P + 1n) / 4n);
+  if (mod(y * y) !== c) return null;
+  return [x, (y & 1n) === 0n ? y : P - y, 1n];
+}
+function hexToBytes(hex) {
+  if (hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(hex)) throw new Error("hex inv\xE1lido");
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+function bytesToHex(bytes) {
+  let s = "";
+  for (const b of bytes) s += b.toString(16).padStart(2, "0");
+  return s;
+}
+var toBig = (b) => BigInt("0x" + (bytesToHex(b) || "0"));
+var to32 = (n) => hexToBytes(n.toString(16).padStart(64, "0"));
+function concat(...parts2) {
+  const out = new Uint8Array(parts2.reduce((a, p) => a + p.length, 0));
+  let o = 0;
+  for (const p of parts2) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+}
+async function sha2562(data) {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+}
+var tagCache = /* @__PURE__ */ new Map();
+async function taggedHash(tag, ...msgs) {
+  let t = tagCache.get(tag);
+  if (!t) {
+    t = await sha2562(new TextEncoder().encode(tag));
+    tagCache.set(tag, t);
+  }
+  return sha2562(concat(t, t, ...msgs));
+}
+function generateSecretKey() {
+  for (; ; ) {
+    const sk = crypto.getRandomValues(new Uint8Array(32));
+    const d = toBig(sk);
+    if (d > 0n && d < N) return bytesToHex(sk);
+  }
+}
+function getPublicKey(secretHex) {
+  const d = toBig(hexToBytes(secretHex));
+  if (d <= 0n || d >= N) throw new Error("chave privada fora do intervalo");
+  const pt = affine(mul(d, G));
+  return bytesToHex(to32(pt[0]));
+}
+async function sign(msgHex, secretHex, auxHex) {
+  const m = hexToBytes(msgHex);
+  const d0 = toBig(hexToBytes(secretHex));
+  if (d0 <= 0n || d0 >= N) throw new Error("chave privada fora do intervalo");
+  const [px, py] = affine(mul(d0, G));
+  const d = (py & 1n) === 0n ? d0 : N - d0;
+  const aux = auxHex ? hexToBytes(auxHex) : crypto.getRandomValues(new Uint8Array(32));
+  const t = to32(d ^ toBig(await taggedHash("BIP0340/aux", aux)));
+  const pxb = to32(px);
+  const k0 = mod(toBig(await taggedHash("BIP0340/nonce", t, pxb, m)), N);
+  if (k0 === 0n) throw new Error("nonce nulo");
+  const [rx, ry] = affine(mul(k0, G));
+  const k = (ry & 1n) === 0n ? k0 : N - k0;
+  const rxb = to32(rx);
+  const e = mod(toBig(await taggedHash("BIP0340/challenge", rxb, pxb, m)), N);
+  return bytesToHex(concat(rxb, to32(mod(k + e * d, N))));
+}
+async function verify(sigHex, msgHex, pubHex) {
   try {
-    body = JSON.parse(text);
+    const sig = hexToBytes(sigHex);
+    const m = hexToBytes(msgHex);
+    const pk = hexToBytes(pubHex);
+    if (sig.length !== 64 || pk.length !== 32) return false;
+    const P0 = liftX(toBig(pk));
+    if (!P0) return false;
+    const r = toBig(sig.slice(0, 32));
+    const s = toBig(sig.slice(32));
+    if (r >= P || s >= N) return false;
+    const e = mod(toBig(await taggedHash("BIP0340/challenge", sig.slice(0, 32), pk, m)), N);
+    const negP = [P0[0], P - P0[1], 1n];
+    const R = affine(add(mul(s, G), mul(e, negP)));
+    if (!R) return false;
+    return (R[1] & 1n) === 0n && R[0] === r;
+  } catch {
+    return false;
+  }
+}
+
+// nostr/event.ts
+var P2PSHARE_KIND = 25050;
+async function eventId(e) {
+  const serial = JSON.stringify([0, e.pubkey, e.created_at, e.kind, e.tags, e.content]);
+  return bytesToHex(await sha2562(new TextEncoder().encode(serial)));
+}
+async function finalizeEvent(template, secretKey) {
+  const base = {
+    pubkey: getPublicKey(secretKey),
+    created_at: template.created_at ?? Math.floor(Date.now() / 1e3),
+    kind: template.kind,
+    tags: template.tags,
+    content: template.content
+  };
+  const id = await eventId(base);
+  return { ...base, id, sig: await sign(id, secretKey) };
+}
+async function verifyEvent(raw) {
+  const e = raw;
+  if (!e || typeof e !== "object") return false;
+  if (typeof e.id !== "string" || typeof e.pubkey !== "string" || typeof e.sig !== "string") return false;
+  if (typeof e.created_at !== "number" || typeof e.kind !== "number") return false;
+  if (typeof e.content !== "string" || !Array.isArray(e.tags)) return false;
+  if (!e.tags.every((t) => Array.isArray(t) && t.every((x) => typeof x === "string"))) return false;
+  if (await eventId(e) !== e.id) return false;
+  return verify(e.sig, e.id, e.pubkey);
+}
+
+// nostr/room.ts
+var VERSION = "p2pshare-v1";
+var enc = new TextEncoder();
+var dec = new TextDecoder();
+async function roomTopic(channelId) {
+  return bytesToHex(await sha2562(enc.encode(`${VERSION}:topic:${channelId}`)));
+}
+var keyCache = /* @__PURE__ */ new Map();
+function roomKey(channelId) {
+  let key = keyCache.get(channelId);
+  if (!key) {
+    key = (async () => {
+      const raw = await sha2562(enc.encode(`${VERSION}:key:${channelId}`));
+      return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+    })();
+    keyCache.set(channelId, key);
+  }
+  return key;
+}
+function toBase64(bytes) {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s);
+}
+function fromBase64(text) {
+  const s = atob(text);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+async function sealRoom(channelId, payload) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    await roomKey(channelId),
+    enc.encode(JSON.stringify(payload))
+  );
+  const out = new Uint8Array(12 + data.byteLength);
+  out.set(iv);
+  out.set(new Uint8Array(data), 12);
+  return toBase64(out);
+}
+async function openRoom(channelId, content) {
+  try {
+    const bytes = fromBase64(content);
+    if (bytes.length < 13) return null;
+    const plain = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: bytes.slice(0, 12) },
+      await roomKey(channelId),
+      bytes.slice(12)
+    );
+    return JSON.parse(dec.decode(plain));
   } catch {
     return null;
   }
-  if (body?.v !== PROTOCOL_VERSION) return null;
-  if (body.type !== "offer" && body.type !== "answer") return null;
-  if (typeof body.sdp !== "string") return null;
-  return { kind: body.type, sdp: body.sdp };
 }
 
-// handshake.ts
-async function deliverHandshake(sender, payload) {
-  const { fallbackChannelId, targetUserId, filename, body, marker } = payload;
-  try {
-    const dm = await sender.openDm(targetUserId);
-    if (dm) {
-      await sender.upload(dm, filename, body, marker);
-      return "dm";
-    }
-  } catch (err) {
-    console.warn("[P2PShare] DM indispon\xEDvel, usando o canal", err);
+// discovery.ts
+var MAX_TTL_MS = 3e4;
+var Discovery = class {
+  constructor(pool2, opts) {
+    this.pool = pool2;
+    this.opts = opts;
+    this.secretKey = opts.secretKey ?? generateSecretKey();
+    this.pubkey = getPublicKey(this.secretKey);
+    this.ttlMs = opts.ttlMs ?? 15e3;
+    this.renewMs = opts.renewMs ?? 5e3;
+    this.maxSkewMs = opts.maxSkewMs ?? 12e4;
+    this.unsubPool = pool2.onEvent((e) => {
+      void this.handle(e);
+    });
+    this.pruneTimer = setInterval(() => this.prune(), 1e3);
   }
-  await sender.upload(fallbackChannelId, filename, body, marker);
-  return "channel";
-}
-
-// signaling.ts
-function postBeacon(channelId, sessionId, username) {
-  return host.sendMessage(channelId, beaconContent(sessionId, username));
-}
-function removeBeacon(channelId, messageId) {
-  return host.deleteMessage(channelId, messageId);
-}
-async function sendHandshake(channelId, sessionId, kind, targetUserId, sdp) {
-  const via = await deliverHandshake(
-    {
-      openDm: host.openDm,
-      upload: host.uploadTextAttachment
-    },
-    {
-      fallbackChannelId: channelId,
-      targetUserId,
-      filename: formatHandshakeName({ sessionId, kind, targetUserId }),
-      body: handshakeBody(kind, sdp),
-      marker: handshakeMarker(sessionId, kind)
-    }
-  );
-  if (via === "channel") {
-    console.info("[P2PShare] handshake foi pelo canal: DM indispon\xEDvel");
+  secretKey;
+  pubkey;
+  ttlMs;
+  renewMs;
+  maxSkewMs;
+  topicToChannel = /* @__PURE__ */ new Map();
+  watched = [];
+  lives = /* @__PURE__ */ new Map();
+  /** Sessão → chave que a anunciou primeiro. Ninguém mais fala por ela. */
+  owners = /* @__PURE__ */ new Map();
+  /** Minha transmissão no ar, se houver. */
+  mine = null;
+  liveListeners = /* @__PURE__ */ new Set();
+  signalListeners = /* @__PURE__ */ new Set();
+  pruneTimer;
+  unsubPool;
+  now() {
+    return this.opts.now?.() ?? Date.now();
   }
-}
-function observeSignals(handlers) {
-  const myId = host.getCurrentUserId();
-  const unsubCreate = host.onMessageCreate((message) => {
-    const beacon = parseBeacon(message);
-    if (beacon) {
-      handlers.onBeacon?.(beacon);
+  /** Canais cujo aviso quero ver. Sempre inclui o da minha transmissão. */
+  async watch(channelIds) {
+    const wanted = [.../* @__PURE__ */ new Set([...channelIds, ...this.mine ? [this.mine.channelId] : []])].sort();
+    if (wanted.join() === this.watched.join()) return;
+    this.watched = wanted;
+    const map = /* @__PURE__ */ new Map();
+    for (const id of wanted) map.set(await roomTopic(id), id);
+    if (wanted.join() !== this.watched.join()) return;
+    this.topicToChannel = map;
+    this.pool.setTopics([...map.keys()]);
+    let changed = false;
+    for (const [sid, live] of this.lives) {
+      if (!wanted.includes(live.channelId)) {
+        this.lives.delete(sid);
+        changed = true;
+      }
+    }
+    if (changed) this.emitLive();
+  }
+  live() {
+    return [...this.lives.values()];
+  }
+  onLive(listener) {
+    this.liveListeners.add(listener);
+    return () => this.liveListeners.delete(listener);
+  }
+  onSignal(listener) {
+    this.signalListeners.add(listener);
+    return () => this.signalListeners.delete(listener);
+  }
+  /** Começa a anunciar. Devolve a função que para (e avisa o fim). */
+  startLive(channelId, sessionId) {
+    this.stopLive();
+    const announce = () => {
+      const me = this.opts.me();
+      void this.send(channelId, { v: PROTOCOL_VERSION, t: "live", s: sessionId, u: me.id, n: me.name, ttl: this.ttlMs });
+    };
+    this.mine = { channelId, sessionId, timer: setInterval(announce, this.renewMs) };
+    void this.watch(this.watched);
+    announce();
+    return () => {
+      if (this.mine?.sessionId === sessionId) this.stopLive();
+    };
+  }
+  stopLive() {
+    if (!this.mine) return;
+    const { channelId, sessionId, timer } = this.mine;
+    clearInterval(timer);
+    this.mine = null;
+    void this.send(channelId, { v: PROTOCOL_VERSION, t: "end", s: sessionId, u: this.opts.me().id });
+  }
+  async sendSignal(channelId, sessionId, kind, toUserId, sdp) {
+    await this.send(channelId, { v: PROTOCOL_VERSION, t: kind, s: sessionId, from: this.opts.me().id, to: toUserId, sdp });
+  }
+  close() {
+    this.stopLive();
+    clearInterval(this.pruneTimer);
+    this.unsubPool();
+    this.liveListeners.clear();
+    this.signalListeners.clear();
+    this.lives.clear();
+  }
+  async send(channelId, wire) {
+    const event = await finalizeEvent({
+      kind: P2PSHARE_KIND,
+      tags: [["t", await roomTopic(channelId)]],
+      content: await sealRoom(channelId, wire),
+      created_at: Math.floor(this.now() / 1e3)
+    }, this.secretKey);
+    this.pool.publish(event);
+  }
+  emitLive() {
+    const list = this.live();
+    for (const l of this.liveListeners) {
+      try {
+        l(list);
+      } catch (err) {
+        console.error("[P2PShare] ouvinte de aviso falhou", err);
+      }
+    }
+  }
+  prune() {
+    const now = this.now();
+    let changed = false;
+    for (const [sid, live] of this.lives) {
+      if (live.expiresAt <= now) {
+        this.lives.delete(sid);
+        changed = true;
+      }
+    }
+    if (changed) this.emitLive();
+  }
+  /** Exposto para testes; em produção vem do pool. */
+  async handle(event) {
+    if (event.pubkey === this.pubkey) return;
+    const now = this.now();
+    if (Math.abs(event.created_at * 1e3 - now) > this.maxSkewMs) return;
+    const topic = event.tags.find((t) => t[0] === "t")?.[1];
+    const channelId = topic ? this.topicToChannel.get(topic) : void 0;
+    if (!channelId) return;
+    const wire = await openRoom(channelId, event.content);
+    if (!wire || wire.v !== PROTOCOL_VERSION || typeof wire.s !== "string" || !wire.s) return;
+    if (wire.t === "live" || wire.t === "end") {
+      if (typeof wire.u !== "string" || !wire.u) return;
+      const owner = this.owners.get(wire.s);
+      if (owner && owner !== event.pubkey) return;
+      this.owners.set(wire.s, event.pubkey);
+      if (wire.t === "end") {
+        if (this.lives.delete(wire.s)) this.emitLive();
+        return;
+      }
+      const ttl = Math.min(MAX_TTL_MS, Math.max(1e3, Number(wire.ttl) || this.ttlMs));
+      const prev = this.lives.get(wire.s);
+      this.lives.set(wire.s, {
+        channelId,
+        sessionId: wire.s,
+        userId: wire.u,
+        name: typeof wire.n === "string" && wire.n ? wire.n.slice(0, 64) : wire.u,
+        pubkey: event.pubkey,
+        expiresAt: now + ttl
+      });
+      if (!prev) this.emitLive();
       return;
     }
-    for (const attachment of message.attachments ?? []) {
-      const name = parseHandshakeName(attachment.filename);
-      if (!name) continue;
-      if (message.author.id === myId) {
-        setTimeout(() => {
-          host.deleteMessage(message.channel_id, message.id).catch(() => {
-          });
-        }, HANDSHAKE_TTL_MS);
-        continue;
-      }
-      if (name.targetUserId !== myId) continue;
-      host.fetchAttachmentText(attachment.url).then((text) => {
-        const body = parseHandshakeBody(text);
-        if (!body) return;
-        handlers.onHandshake?.({
-          sessionId: name.sessionId,
-          kind: name.kind,
-          fromUserId: message.author.id,
-          sdp: body.sdp
-        });
-      }).catch((err) => console.warn("[P2PShare] handshake ileg\xEDvel", err));
+    if (wire.t !== "offer" && wire.t !== "answer") return;
+    if (wire.to !== this.opts.me().id || typeof wire.from !== "string" || typeof wire.sdp !== "string") return;
+    if (wire.t === "offer") {
+      if (this.mine?.sessionId !== wire.s || this.mine.channelId !== channelId) return;
+    } else {
+      if (this.owners.get(wire.s) !== event.pubkey) return;
     }
+    const signal = { channelId, sessionId: wire.s, kind: wire.t, fromUserId: wire.from, sdp: wire.sdp };
+    for (const l of this.signalListeners) {
+      try {
+        l(signal);
+      } catch (err) {
+        console.error("[P2PShare] ouvinte de sinal falhou", err);
+      }
+    }
+  }
+};
+
+// nostr/pool.ts
+var SUB_ID = "p2ps";
+var SEEN_LIMIT = 2e3;
+var RelayPool = class {
+  constructor(urls, factory, opts) {
+    this.factory = factory;
+    this.opts = opts;
+    this.conns = urls.map((url) => ({ url, socket: null, open: false, retry: 0, timer: null }));
+    for (const c of this.conns) this.connect(c);
+  }
+  conns;
+  topics = [];
+  seen = /* @__PURE__ */ new Set();
+  closed = false;
+  listeners = /* @__PURE__ */ new Set();
+  get openCount() {
+    return this.conns.filter((c) => c.open).length;
+  }
+  onEvent(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  /** Troca os tópicos escutados. Lista vazia cancela a inscrição. */
+  setTopics(topics) {
+    const next = [...new Set(topics)].sort();
+    if (next.join() === this.topics.join()) return;
+    this.topics = next;
+    for (const c of this.conns) if (c.open) this.subscribe(c);
+  }
+  publish(event) {
+    this.remember(event.id);
+    const frame = JSON.stringify(["EVENT", event]);
+    for (const c of this.conns) {
+      if (!c.open) continue;
+      try {
+        c.socket?.send(frame);
+      } catch {
+      }
+    }
+  }
+  close() {
+    this.closed = true;
+    for (const c of this.conns) {
+      if (c.timer) clearTimeout(c.timer);
+      c.timer = null;
+      try {
+        c.socket?.close();
+      } catch {
+      }
+      c.socket = null;
+      c.open = false;
+    }
+    this.listeners.clear();
+  }
+  now() {
+    return this.opts.now?.() ?? Date.now();
+  }
+  connect(c) {
+    if (this.closed) return;
+    let socket;
+    try {
+      socket = this.factory(c.url);
+    } catch {
+      this.scheduleReconnect(c);
+      return;
+    }
+    c.socket = socket;
+    socket.onopen = () => {
+      c.open = true;
+      c.retry = 0;
+      this.subscribe(c);
+    };
+    socket.onmessage = (data) => this.handle(data);
+    socket.onclose = () => {
+      if (c.socket !== socket) return;
+      c.open = false;
+      c.socket = null;
+      this.scheduleReconnect(c);
+    };
+  }
+  scheduleReconnect(c) {
+    if (this.closed || c.timer) return;
+    const base = this.opts.reconnectBaseMs ?? 2e3;
+    const max = this.opts.reconnectMaxMs ?? 6e4;
+    const delay = Math.min(max, base * 2 ** c.retry);
+    c.retry++;
+    c.timer = setTimeout(() => {
+      c.timer = null;
+      this.connect(c);
+    }, delay);
+  }
+  subscribe(c) {
+    try {
+      if (!this.topics.length) {
+        c.socket?.send(JSON.stringify(["CLOSE", SUB_ID]));
+        return;
+      }
+      const since = Math.floor(this.now() / 1e3) - (this.opts.sinceSeconds ?? 30);
+      c.socket?.send(JSON.stringify(["REQ", SUB_ID, { kinds: [this.opts.kind], "#t": this.topics, since }]));
+    } catch {
+    }
+  }
+  remember(id) {
+    if (this.seen.has(id)) return false;
+    this.seen.add(id);
+    if (this.seen.size > SEEN_LIMIT) {
+      this.seen.delete(this.seen.values().next().value);
+    }
+    return true;
+  }
+  handle(data) {
+    let msg;
+    try {
+      msg = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (!Array.isArray(msg) || msg[0] !== "EVENT" || msg[1] !== SUB_ID) return;
+    const event = msg[2];
+    if (typeof event?.id !== "string" || !this.remember(event.id)) return;
+    if (event.kind !== this.opts.kind) return;
+    const t = event.tags?.find?.((tag) => tag?.[0] === "t")?.[1];
+    if (!t || !this.topics.includes(t)) return;
+    void verifyEvent(event).then((ok) => {
+      if (!ok) {
+        this.seen.delete(event.id);
+        return;
+      }
+      for (const l of this.listeners) {
+        try {
+          l(event);
+        } catch (err) {
+          console.error("[P2PShare] ouvinte de relay falhou", err);
+        }
+      }
+    });
+  }
+};
+
+// signaling.ts
+var pool = null;
+var discovery = null;
+var unwatchNav = null;
+function ensure() {
+  if (discovery) return discovery;
+  pool = new RelayPool(RELAYS, (url) => host.openRelaySocket(url), { kind: P2PSHARE_KIND });
+  discovery = new Discovery(pool, {
+    me: () => ({ id: host.getCurrentUserId(), name: host.getCurrentUsername() })
   });
-  const unsubDelete = host.onMessageDelete((channelId, messageId) => {
-    handlers.onBeaconGone?.(channelId, messageId);
+  unwatchNav = host.onNavigationChange(() => {
+    void refreshWatched();
   });
+  void refreshWatched();
+  return discovery;
+}
+async function refreshWatched() {
+  if (!discovery) return;
+  const ids = /* @__PURE__ */ new Set();
+  const voice = host.getVoiceChannelId();
+  const guilds = /* @__PURE__ */ new Set();
+  const selected = host.getSelectedGuildId();
+  if (selected) guilds.add(selected);
+  if (voice) {
+    ids.add(voice);
+    const g = host.getChannelGuildId(voice);
+    if (g) guilds.add(g);
+  }
+  for (const g of guilds) for (const id of host.getGuildVoiceChannelIds(g)) ids.add(id);
+  await discovery.watch([...ids]);
+}
+function stopSignaling() {
+  unwatchNav?.();
+  unwatchNav = null;
+  discovery?.close();
+  discovery = null;
+  pool?.close();
+  pool = null;
+}
+function announceLive(channelId, sessionId) {
+  return ensure().startLive(channelId, sessionId);
+}
+function sendHandshake(channelId, sessionId, kind, targetUserId, sdp) {
+  return ensure().sendSignal(channelId, sessionId, kind, targetUserId, sdp);
+}
+function toBeacon(live) {
+  return {
+    messageId: `nostr:${live.sessionId}`,
+    channelId: live.channelId,
+    sessionId: live.sessionId,
+    broadcasterId: live.userId,
+    broadcasterName: live.name
+  };
+}
+function believable(live, myId) {
+  return live.userId !== myId && host.isUserInVoiceChannel(live.userId, live.channelId);
+}
+function observeSignals(handlers) {
+  const d = ensure();
+  const myId = host.getCurrentUserId();
+  let shown = /* @__PURE__ */ new Map();
+  const sync = () => {
+    const next = /* @__PURE__ */ new Map();
+    for (const live of d.live()) {
+      if (!believable(live, myId)) continue;
+      const b = toBeacon(live);
+      next.set(b.messageId, b);
+    }
+    for (const [key, b] of next) if (!shown.has(key)) handlers.onBeacon?.(b);
+    for (const [key, b] of shown) if (!next.has(key)) handlers.onBeaconGone?.(b);
+    shown = next;
+  };
+  const unsubLive = d.onLive(sync);
+  const unsubNav = host.onNavigationChange(() => setTimeout(sync, 0));
+  const unsubSignal = d.onSignal((s) => {
+    handlers.onHandshake?.({ sessionId: s.sessionId, kind: s.kind, fromUserId: s.fromUserId, sdp: s.sdp });
+  });
+  sync();
   return () => {
-    unsubCreate();
-    unsubDelete();
+    unsubLive();
+    unsubNav();
+    unsubSignal();
   };
 }
 
@@ -2857,6 +3444,7 @@ async function startBroadcast() {
   });
   const onUnload = () => {
     session?.peers.closeAll();
+    session?.stopAnnounce();
     void stopBroadcast();
   };
   window.addEventListener("beforeunload", onUnload);
@@ -2867,24 +3455,18 @@ async function startBroadcast() {
   const unsubscribe = observeSignals({
     onHandshake: (event) => {
       if (event.sessionId !== sessionId || event.kind !== "offer") return;
+      if (!host.isUserInVoiceChannel(event.fromUserId, channelId)) {
+        console.warn("[P2PShare] offer de quem n\xE3o est\xE1 na chamada, ignorado", event.fromUserId);
+        return;
+      }
       peers.handleOffer(event.fromUserId, event.sdp).catch((err) => console.error("[P2PShare] falha ao responder offer", err));
     }
   });
-  let beaconId;
-  try {
-    beaconId = await postBeacon(channelId, sessionId, host.getCurrentUsername());
-  } catch (err) {
-    unwatchExit();
-    unsubscribe();
-    stream.getTracks().forEach((track) => track.stop());
-    audio.stop?.();
-    host.toast(`n\xE3o deu para anunciar a transmiss\xE3o: ${err.message}`, "error");
-    return;
-  }
+  const stopAnnounce = announceLive(channelId, sessionId);
   session = {
     sessionId,
     channelId,
-    beaconId,
+    stopAnnounce,
     stream,
     peers,
     unsubscribe,
@@ -2916,11 +3498,7 @@ async function stopBroadcast() {
   current.peers.closeAll();
   current.stream.getTracks().forEach((track) => track.stop());
   current.stopAudio?.();
-  try {
-    await removeBeacon(current.channelId, current.beaconId);
-  } catch (err) {
-    console.warn("[P2PShare] n\xE3o deu para apagar o beacon", err);
-  }
+  current.stopAnnounce();
   notify();
   host.toast("Transmiss\xE3o encerrada", "info");
 }
@@ -2932,7 +3510,7 @@ var SOUND_STREAM_ENDED = "stream_ended";
 var PLAY_SOUND_MARKER = "Unable to find sound for pack name";
 var MANGLED_KEYS = ["Ak", "Qh", "aN"];
 function getModule2(filter, options) {
-  return BdApi.Webpack?.getModule?.(filter, options);
+  return BdApi.Webpack?.getModule?.((m) => !isImpostor(m) && filter(m), options);
 }
 function safeValues(m) {
   const out = [];
@@ -2963,9 +3541,9 @@ var STRATEGIES = [
     // então é o primeiro mesmo sendo o menos provável hoje.
     name: "playSound-nomeado",
     resolve() {
-      const mod = getModule2((m) => isFunction(m?.playSound));
-      if (!mod) return null;
-      return (name) => mod.playSound(name, 1);
+      const mod2 = getModule2((m) => isFunction(m?.playSound));
+      if (!mod2) return null;
+      return (name) => mod2.playSound(name, 1);
     }
   },
   {
@@ -2992,13 +3570,13 @@ var STRATEGIES = [
     // buscas que não dependem dele.
     name: "SoundUtils-mangleado",
     resolve() {
-      const mod = getModule2((m) => {
+      const mod2 = getModule2((m) => {
         if (typeof m !== "object" || m === null) return false;
         const keys = Object.keys(m);
         return keys.length === MANGLED_KEYS.length && MANGLED_KEYS.every((k) => keys.includes(k)) && MANGLED_KEYS.every((k) => isFunction(m[k]));
       });
-      if (!mod) return null;
-      return (name) => mod.Ak(name, 1);
+      if (!mod2) return null;
+      return (name) => mod2.Ak(name, 1);
     }
   }
 ];
@@ -3107,15 +3685,6 @@ function looksLikePlugin(source, expectedName) {
 // watch.ts
 var beacons = /* @__PURE__ */ new Map();
 var watching = /* @__PURE__ */ new Map();
-var deadBeacons = /* @__PURE__ */ new Map();
-var DEAD_BEACON_TTL_MS = 3 * 60 * 1e3;
-function isDead(messageId) {
-  const when = deadBeacons.get(messageId);
-  if (when === void 0) return false;
-  if (Date.now() - when < DEAD_BEACON_TTL_MS) return true;
-  deadBeacons.delete(messageId);
-  return false;
-}
 var beaconListeners = /* @__PURE__ */ new Set();
 function notifyBeacons() {
   const list = [...beacons.values()];
@@ -3134,65 +3703,16 @@ function isWatching(sessionId) {
 function watchingCount() {
   return watching.size;
 }
-function acceptBeacon(beacon) {
-  if (beacons.has(beacon.messageId)) return;
-  if (isDead(beacon.messageId)) return;
-  beacons.set(beacon.messageId, beacon);
-  notifyBeacons();
-  syncBeaconNotices();
-}
-function syncBeaconNotices() {
-  const current = host.getVoiceChannelId();
-  for (const beacon of beacons.values()) {
-    const aqui = current !== null && beacon.channelId === current;
-    if (aqui && !watching.has(beacon.sessionId)) {
-      host.announceBeacon(
-        { sessionId: beacon.sessionId, broadcasterName: beacon.broadcasterName },
-        () => {
-          void startWatching(beacon);
-        }
-      );
-    } else {
-      host.revokeBeacon(beacon.sessionId);
-    }
-  }
-}
-function refreshBeaconNotices() {
-  syncBeaconNotices();
-}
 function beaconIsHere(beacon) {
   const current = host.getVoiceChannelId();
   return current !== null && beacon.channelId === current;
 }
-function forgetBeacon(sessionId) {
-  for (const [messageId, beacon] of beacons) {
-    if (beacon.sessionId !== sessionId) continue;
-    beacons.delete(messageId);
-    deadBeacons.set(messageId, Date.now());
-  }
-  host.revokeBeacon(sessionId);
-}
-async function scanChannelHistory(channelId, limit) {
-  if (!channelId) return 0;
-  let messages;
-  try {
-    messages = await host.fetchRecentMessages(channelId, limit);
-  } catch (err) {
-    console.warn("[P2PShare] n\xE3o deu para varrer o hist\xF3rico do canal", err);
-    return 0;
-  }
-  const found = selectBeacons(messages, {
-    excludeAuthorId: host.getCurrentUserId(),
-    knownMessageIds: [
-      ...beacons.keys(),
-      ...[...deadBeacons.keys()].filter(isDead)
-    ]
-  });
-  for (const beacon of found) acceptBeacon(beacon);
-  return found.length;
-}
 async function startWatching(beacon) {
   if (watching.has(beacon.sessionId)) return;
+  if (!beaconIsHere(beacon)) {
+    host.toast(`Entre na chamada de ${beacon.broadcasterName} para assistir`, "info");
+    return;
+  }
   const transport = {
     send: (kind, targetUserId, sdp) => sendHandshake(beacon.channelId, beacon.sessionId, kind, targetUserId, sdp)
   };
@@ -3213,7 +3733,6 @@ async function startWatching(beacon) {
   };
   peer.onFailed = (reason) => {
     host.toast(reason, "error");
-    forgetBeacon(beacon.sessionId);
     stopWatching(beacon.sessionId);
   };
   try {
@@ -3221,7 +3740,6 @@ async function startWatching(beacon) {
     host.toast(`Conectando com ${beacon.broadcasterName}\u2026`, "info");
   } catch (err) {
     host.toast(`n\xE3o deu para pedir a transmiss\xE3o: ${err.message}`, "error");
-    forgetBeacon(beacon.sessionId);
     stopWatching(beacon.sessionId);
   }
 }
@@ -3230,29 +3748,15 @@ function stopWatching(sessionId) {
   watching.delete(sessionId);
   host.unmountOverlay(sessionId);
   notifyBeacons();
-  for (const beacon of beacons.values()) {
-    if (beacon.sessionId !== sessionId) continue;
-    host.announceBeacon(
-      { sessionId: beacon.sessionId, broadcasterName: beacon.broadcasterName },
-      () => {
-        void startWatching(beacon);
-      }
-    );
-    return;
-  }
 }
 function initWatcher() {
-  const myId = host.getCurrentUserId();
   const unsubscribe = observeSignals({
     onBeacon: (beacon) => {
-      if (beacon.broadcasterId === myId) return;
-      acceptBeacon(beacon);
+      beacons.set(beacon.messageId, beacon);
+      notifyBeacons();
     },
-    onBeaconGone: (_channelId, messageId) => {
-      const beacon = beacons.get(messageId);
-      if (!beacon) return;
-      beacons.delete(messageId);
-      host.revokeBeacon(beacon.sessionId);
+    onBeaconGone: (beacon) => {
+      if (!beacons.delete(beacon.messageId)) return;
       stopWatching(beacon.sessionId);
       notifyBeacons();
     },
@@ -3261,11 +3765,16 @@ function initWatcher() {
       watching.get(event.sessionId)?.handleAnswer(event.sdp).catch((err) => console.error("[P2PShare] answer inv\xE1lida", err));
     }
   });
+  const unsubVoice = host.onVoiceChannelChange((channelId) => {
+    for (const b of beacons.values()) {
+      if (b.channelId !== channelId && watching.has(b.sessionId)) stopWatching(b.sessionId);
+    }
+    notifyBeacons();
+  });
   return () => {
     unsubscribe();
-    for (const beacon of beacons.values()) host.revokeBeacon(beacon.sessionId);
+    unsubVoice();
     beacons.clear();
-    deadBeacons.clear();
     for (const sessionId of [...watching.keys()]) stopWatching(sessionId);
     host.unmountAllOverlays();
     notifyBeacons();
@@ -3378,9 +3887,28 @@ var P2PShare = class {
   cleanupUpdater = null;
   cleanupVoiceBtn = null;
   cleanupBeacons = null;
-  cleanupBeaconSound = null;
   cleanupVoice = null;
+  /** Relógio de espera pelo login; parar o plugin antes disso o cancela. */
+  readyTimer = null;
+  /**
+   * O carregador pode chamar start() antes de o Discord ter o usuário
+   * logado. Sem usuário nada funciona (o watcher precisa do próprio id),
+   * então espera ele aparecer em vez de explodir.
+   */
   start() {
+    if (hasCurrentUser()) {
+      this.startReady();
+      return;
+    }
+    console.info("[P2PShare] esperando o login do Discord para iniciar");
+    this.readyTimer = setInterval(() => {
+      if (!hasCurrentUser()) return;
+      if (this.readyTimer) clearInterval(this.readyTimer);
+      this.readyTimer = null;
+      this.startReady();
+    }, 500);
+  }
+  startReady() {
     ui_exports.injectStyles();
     const toggle = (anchor) => {
       if (!getBroadcastState().active) {
@@ -3424,7 +3952,7 @@ var P2PShare = class {
           names: [getUsername(b.broadcasterId), b.broadcasterName],
           // Já assistindo: o selo vira informativo, sem ação repetida.
           onWatch: isWatching(b.sessionId) ? void 0 : () => {
-            ui_exports.focusChannel(b.channelId);
+            if (beaconIsHere(b)) ui_exports.focusChannel(b.channelId);
             void startWatching(b);
           }
         });
@@ -3432,31 +3960,7 @@ var P2PShare = class {
       ui_exports.setLiveUsers(users);
     };
     this.cleanupBeacons = onBeaconsChange(refreshLive);
-    const announced = /* @__PURE__ */ new Set();
-    let scanning = false;
-    this.cleanupBeaconSound = onBeaconsChange((beacons2) => {
-      const live = new Set(
-        beacons2.filter(beaconIsHere).map((b) => b.sessionId)
-      );
-      for (const sessionId of live) {
-        if (announced.has(sessionId)) continue;
-        announced.add(sessionId);
-        if (!scanning) playStreamStarted();
-      }
-      for (const sessionId of [...announced]) {
-        if (live.has(sessionId)) continue;
-        announced.delete(sessionId);
-        playStreamStopped();
-      }
-    });
-    this.cleanupVoice = onVoiceChannelChange((channelId) => {
-      refreshBeaconNotices();
-      if (!channelId) return;
-      scanning = true;
-      void scanChannelHistory(channelId).then(refreshBeaconNotices).finally(() => {
-        scanning = false;
-      });
-    });
+    this.cleanupVoice = onVoiceChannelChange(() => refreshLive());
     let { viewers, active } = getBroadcastState();
     this.cleanupState = onBroadcastStateChange((state) => {
       ui_exports.updateLauncher(state);
@@ -3474,13 +3978,16 @@ var P2PShare = class {
     setTimeout(() => ui_exports.dumpVoiceDiagnostics(), 8e3);
   }
   stop() {
+    if (this.readyTimer) {
+      clearInterval(this.readyTimer);
+      this.readyTimer = null;
+      return;
+    }
     void stopBroadcast();
     this.cleanupState?.();
     this.cleanupState = null;
     this.cleanupBeacons?.();
     this.cleanupBeacons = null;
-    this.cleanupBeaconSound?.();
-    this.cleanupBeaconSound = null;
     this.cleanupVoice?.();
     this.cleanupVoice = null;
     this.cleanupVoiceBtn?.();
@@ -3489,6 +3996,7 @@ var P2PShare = class {
     this.cleanupUpdater = null;
     this.cleanupWatcher?.();
     this.cleanupWatcher = null;
+    setTimeout(stopSignaling, 1500);
     ui_exports.unmountLauncher();
     ui_exports.unmountAllOverlays();
     ui_exports.removeStyles();

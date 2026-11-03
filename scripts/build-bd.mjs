@@ -63,17 +63,35 @@ await build({
     footer: { js: "module.exports = module.exports.default;" }
 });
 
-// O plugin confere o auxiliar nativo por SHA-256 antes de executá-lo, e o
-// hash tem que ser o do binário que vai junto da release — deixá-lo escrito à
-// mão em constants.ts divergiria na primeira recompilação do Rust.
-const helperExe = resolve(root, "native/audio-helper/target/release/p2pshare-audio.exe");
-let helperHash = "";
-try {
-    helperHash = createHash("sha256").update(await readFile(helperExe)).digest("hex");
-    await copyFile(helperExe, resolve(outDir, "p2pshare-audio.exe"));
-    console.log(`auxiliar de áudio: ${helperHash.slice(0, 16)}…`);
-} catch {
-    console.warn("aviso: auxiliar de áudio não compilado — rode cargo build --release em native/audio-helper");
+// O plugin confere o auxiliar nativo por SHA-256 antes de executá-lo e, se não
+// tiver um que bata, baixa o publicado em HELPER_TAG. Então o hash embutido
+// tem que ser o DESSE binário publicado: um hash vazio ou de uma compilação
+// local que ninguém publicou faz o plugin recusar todo auxiliar e o áudio
+// nunca funcionar (aconteceu num build fora do Vencord, sem o Rust compilado).
+//
+// Padrão: o binário publicado em HELPER_TAG (baixado e guardado em release/).
+// P2PSHARE_HELPER_LOCAL=1 usa a compilação local — só junto de uma tag nova
+// em HELPER_TAG com esse mesmo binário publicado.
+const helperTag = constantsSrc.match(/HELPER_TAG\s*=\s*"([^"]+)"/)?.[1];
+if (!helperTag) throw new Error("não achei HELPER_TAG em constants.ts");
+const helperOut = resolve(outDir, "p2pshare-audio.exe");
+const sha = buf => createHash("sha256").update(buf).digest("hex");
+let helperHash;
+
+if (process.env.P2PSHARE_HELPER_LOCAL === "1") {
+    const helperExe = resolve(root, "native/audio-helper/target/release/p2pshare-audio.exe");
+    const buf = await readFile(helperExe);
+    helperHash = sha(buf);
+    await copyFile(helperExe, helperOut);
+    console.log(`auxiliar de áudio LOCAL: ${helperHash.slice(0, 16)}… — publique em ${helperTag}`);
+} else {
+    const url = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${helperTag}/p2pshare-audio.exe`;
+    const res = await fetch(url, { redirect: "follow" });
+    if (!res.ok) throw new Error(`não deu para baixar o auxiliar publicado (${helperTag}): ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    helperHash = sha(buf);
+    await writeFile(helperOut, buf);
+    console.log(`auxiliar de áudio publicado (${helperTag}): ${helperHash.slice(0, 16)}…`);
 }
 
 // Prefixa o cabeçalho que o BetterDiscord lê para nome, autor e versão.
