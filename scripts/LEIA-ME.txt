@@ -7,7 +7,10 @@ INSTALAR  (leva 1 minuto)
   assinado: clique em "Mais informacoes" > "Executar assim mesmo".
 
   O instalador fecha o Discord (pede antes), coloca o P2PShare e pronto.
-  Nao precisa de BetterDiscord.
+  Nao precisa de BetterDiscord. O componente de audio (p2pshare-audio.exe,
+  ~200 KB, programa do proprio P2PShare: nao e driver, nao pede
+  administrador nem reinicio) ja vai junto, entao o som da transmissao
+  funciona de cara.
 
   O que ele faz, sem nada escondido:
     * %AppData%\P2PShare\  recebe o plugin, o componente de audio e o
