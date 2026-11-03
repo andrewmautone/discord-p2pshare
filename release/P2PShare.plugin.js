@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.21.0
+ * @version 1.21.1
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 var __defProp = Object.defineProperty;
@@ -128,7 +128,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.21.0";
+var PLUGIN_VERSION = "1.21.1";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "f78221d17c22d2cdc8c4067a9c27e8791c78f88eda70561258b1b80f235936e5";
@@ -1600,7 +1600,7 @@ function setNativeButtonMode(mode) {
   for (const btn of voiceBtns) paintOne(btn);
 }
 function hasNativeGoLive() {
-  return findNativeButtons().some(isVisible);
+  return findNativeButtons().some((b) => isVisible(b) && !isBlockedIcon(nativePathsOf(b)));
 }
 function openNativeGoLive() {
   const btn = findNativeButtons().find(isVisible);
