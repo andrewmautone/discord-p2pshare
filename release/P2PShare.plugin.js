@@ -904,16 +904,19 @@ __export(ui_exports, {
   closeBroadcastMenu: () => closeBroadcastMenu,
   dumpVoiceDiagnostics: () => dumpVoiceDiagnostics,
   focusChannel: () => focusChannel,
+  hasNativeGoLive: () => hasNativeGoLive,
   injectStyles: () => injectStyles,
   mountLauncher: () => mountLauncher,
   mountOverlay: () => mountOverlay,
   mountVoiceButton: () => mountVoiceButton,
   openBroadcastMenu: () => openBroadcastMenu,
+  openNativeGoLive: () => openNativeGoLive,
   openSourcePicker: () => openSourcePicker,
   removeStyles: () => removeStyles,
   revokeBeacon: () => revokeBeacon,
   setLauncherHidden: () => setLauncherHidden,
   setLiveUsers: () => setLiveUsers,
+  setNativeButtonMode: () => setNativeButtonMode,
   setOverlayViewers: () => setOverlayViewers,
   unmountAllOverlays: () => unmountAllOverlays,
   unmountLauncher: () => unmountLauncher,
@@ -941,6 +944,19 @@ function usableBudgetMbps(samplesMbps) {
 }
 function formatMbps(bps) {
   return `${(bps / 1e6).toFixed(1).replace(".", ",")} Mb/s`;
+}
+
+// golive.ts
+function isShareScreenLabel(label) {
+  const l = label.toLowerCase();
+  if (!/compartilh|share/.test(l)) return false;
+  return !/cheia|fullscreen|convite|invite|link|atividade|activit/.test(l);
+}
+function shouldIntercept(ctx) {
+  if (ctx.bypass || ctx.mode !== "p2p") return false;
+  if (ctx.shiftKey) return false;
+  if (ctx.p2pActive) return true;
+  return isShareScreenLabel(ctx.nativeLabel);
 }
 
 // host/bd/ui.ts
@@ -1135,10 +1151,9 @@ var CSS = `
     padding: 2px 9px;
 }
 .p2ps-overlay-bar button:disabled { opacity: .4; cursor: default; }
-.p2ps-voice-btn { position: relative; }
-/* As classes do Discord nao dimensionam o icone: o SVG deles carrega
-   width/height proprios. Sem isto o botao existe com 0 pixel. */
-.p2ps-voice-btn svg { width: 20px; height: 20px; }
+/* Botao nativo do Discord assumido pelo P2PShare. Marcado por atributo, nao
+   por classe: o React reescreve o className a cada mudanca de estado. */
+[data-p2ps-native] { position: relative; }
 .p2ps-voice-count {
     position: absolute;
     bottom: 0;
@@ -1425,113 +1440,125 @@ function unmountLauncher() {
   launcher.remove();
   launcher = null;
 }
-var voiceBtns = /* @__PURE__ */ new Map();
+var NATIVE_ATTR = "data-p2ps-native";
+var LABEL_ATTR = "data-p2ps-label";
+var voiceBtns = /* @__PURE__ */ new Set();
 var voiceObserver = null;
 var lastState = { active: false, viewers: 0 };
+var nativeMode = "p2p";
+var bypassClick = false;
+var onNativeToggle = null;
 function isVisible(el) {
   if (!el || !el.isConnected) return false;
   const r = el.getBoundingClientRect();
   return r.width > 0 && r.height > 0;
 }
-var isOurs = (el) => !!el?.classList.contains("p2ps-voice-btn");
-function climbToPeer(el) {
-  let node = el;
-  while (node.parentElement && node.parentElement !== document.body && node.parentElement.childElementCount === 1) {
-    node = node.parentElement;
-  }
-  return node;
+var isOurs = (el) => !!el?.closest('[class*="p2ps-"]');
+function nativeLabelOf(btn) {
+  return btn.getAttribute(LABEL_ATTR) ?? btn.getAttribute("aria-label") ?? "";
 }
-function collectSites() {
-  const sites = [];
-  const anchors = /* @__PURE__ */ new Set();
+function findNativeButtons() {
+  const found = /* @__PURE__ */ new Set();
+  for (const btn of document.querySelectorAll(`[${NATIVE_ATTR}]`)) {
+    found.add(btn);
+  }
   for (const path of document.querySelectorAll('button svg path[d^="M2 4.5C2 3.397"]')) {
     const btn = path.closest("button");
-    if (btn && !isOurs(btn)) anchors.add(btn);
+    if (btn && !isOurs(btn)) found.add(btn);
   }
   for (const btn of document.querySelectorAll("button[aria-label]")) {
     if (isOurs(btn)) continue;
-    const label = (btn.getAttribute("aria-label") || "").toLowerCase();
-    if (!/compartilh|share/.test(label)) continue;
-    if (/cheia|fullscreen|convite|invite|link/.test(label)) continue;
-    anchors.add(btn);
+    if (isShareScreenLabel(btn.getAttribute("aria-label") || "")) found.add(btn);
   }
-  for (const anchor of anchors) {
-    if (anchor.closest('[class*="actionButtons"]')) continue;
-    const peer = climbToPeer(anchor);
-    sites.push({
-      host: anchor,
-      style: anchor,
-      container: peer.parentElement ?? peer,
-      place: (btn) => {
-        const wrapper = document.createElement("div");
-        wrapper.className = peer.className;
-        wrapper.appendChild(btn);
-        btn.__p2psWrapper = wrapper;
-        peer.insertAdjacentElement("afterend", wrapper);
-      }
-    });
+  for (const btn of found) {
+    if (!btn.hasAttribute(NATIVE_ATTR)) btn.setAttribute(NATIVE_ATTR, "");
   }
-  for (const row of document.querySelectorAll('[class*="actionButtons"]')) {
-    const sibling = [...row.querySelectorAll("button")].find((b) => !isOurs(b));
-    if (!sibling) continue;
-    sites.push({
-      host: row,
-      style: sibling,
-      container: row,
-      place: (btn) => row.appendChild(btn)
-    });
-  }
-  return sites;
+  return [...found];
 }
 function paintOne(btn) {
   const svg = btn.querySelector("svg");
-  if (svg) svg.style.color = lastState.active ? "var(--status-danger, #ed4245)" : "";
-  const label = lastState.active ? `Parar transmiss\xE3o P2P \u2014 ${lastState.viewers} assistindo` : "Transmitir tela via P2P";
-  btn.setAttribute("aria-label", label);
-  btn.title = label;
-  btn.querySelector(".p2ps-voice-count")?.remove();
-  if (lastState.active && lastState.viewers > 0) {
-    const badge = document.createElement("span");
-    badge.className = "p2ps-voice-count";
-    badge.textContent = String(lastState.viewers);
-    btn.appendChild(badge);
+  const ours = nativeMode === "p2p" && lastState.active;
+  if (svg) svg.style.color = ours ? "var(--status-danger, #ed4245)" : "";
+  if (ours) {
+    if (!btn.hasAttribute(LABEL_ATTR)) {
+      btn.setAttribute(LABEL_ATTR, btn.getAttribute("aria-label") ?? "");
+    }
+    const label = `Parar transmiss\xE3o P2P \u2014 ${lastState.viewers} assistindo`;
+    if (btn.getAttribute("aria-label") !== label) btn.setAttribute("aria-label", label);
+  } else if (btn.hasAttribute(LABEL_ATTR)) {
+    btn.setAttribute("aria-label", btn.getAttribute(LABEL_ATTR) ?? "");
+    btn.removeAttribute(LABEL_ATTR);
+  }
+  const want = ours && lastState.viewers > 0 ? String(lastState.viewers) : null;
+  const badge = btn.querySelector(".p2ps-voice-count");
+  if (!want) {
+    badge?.remove();
+  } else if (!badge) {
+    const el = document.createElement("span");
+    el.className = "p2ps-voice-count";
+    el.textContent = want;
+    btn.appendChild(el);
+  } else if (badge.textContent !== want) {
+    badge.textContent = want;
   }
 }
-function removeBtn(btn) {
-  const wrapper = btn.__p2psWrapper;
-  (wrapper ?? btn).remove();
+function releaseNative(btn) {
+  const svg = btn.querySelector("svg");
+  if (svg) svg.style.color = "";
+  if (btn.hasAttribute(LABEL_ATTR)) {
+    btn.setAttribute("aria-label", btn.getAttribute(LABEL_ATTR) ?? "");
+    btn.removeAttribute(LABEL_ATTR);
+  }
+  btn.querySelector(".p2ps-voice-count")?.remove();
+  btn.removeAttribute(NATIVE_ATTR);
+}
+function onNativeClick(e) {
+  const target = e.target;
+  const btn = target?.closest?.(`[${NATIVE_ATTR}]`);
+  if (!btn || !onNativeToggle) return;
+  const take = shouldIntercept({
+    mode: nativeMode,
+    bypass: bypassClick,
+    shiftKey: e.shiftKey,
+    p2pActive: lastState.active,
+    nativeLabel: nativeLabelOf(btn)
+  });
+  if (!take) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  onNativeToggle(btn);
+}
+function setNativeButtonMode(mode) {
+  nativeMode = mode;
+  for (const btn of voiceBtns) paintOne(btn);
+}
+function hasNativeGoLive() {
+  return findNativeButtons().some(isVisible);
+}
+function openNativeGoLive() {
+  const btn = findNativeButtons().find(isVisible);
+  if (!btn) return false;
+  bypassClick = true;
+  try {
+    btn.click();
+  } finally {
+    bypassClick = false;
+  }
+  return true;
 }
 function mountVoiceButton(opts) {
+  onNativeToggle = opts.onToggle;
+  nativeMode = opts.mode;
+  window.addEventListener("click", onNativeClick, true);
   const sync = () => {
-    for (const [host2, btn] of voiceBtns) {
-      if (!host2.isConnected || !btn.isConnected) {
-        removeBtn(btn);
-        voiceBtns.delete(host2);
-      }
+    for (const btn of voiceBtns) {
+      if (!btn.isConnected) voiceBtns.delete(btn);
     }
-    for (const btn of document.querySelectorAll(".p2ps-voice-btn")) {
-      const parent = btn.parentElement;
-      if (!parent) continue;
-      const ours = parent.querySelectorAll(".p2ps-voice-btn");
-      for (let i = 1; i < ours.length; i++) ours[i].remove();
-    }
-    for (const site of collectSites()) {
-      if (voiceBtns.has(site.host)) continue;
-      if (site.container.querySelector(".p2ps-voice-btn")) continue;
-      const btn = document.createElement("button");
-      btn.className = `${site.style.className} p2ps-voice-btn`;
-      btn.type = "button";
-      btn.innerHTML = SCREENSHARE_SVG;
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        opts.onToggle(btn);
-      });
-      site.place(btn);
+    for (const btn of findNativeButtons()) {
+      voiceBtns.add(btn);
       paintOne(btn);
-      voiceBtns.set(site.host, btn);
     }
-    opts.onAnchorChange([...voiceBtns.values()].some(isVisible));
+    opts.onAnchorChange(nativeMode === "p2p" && [...voiceBtns].some(isVisible));
     applyLiveBadges();
     applySidebarBadges();
     applyTileBadges();
@@ -1563,7 +1590,9 @@ function mountVoiceButton(opts) {
     if (fallback !== null) clearTimeout(fallback);
     voiceObserver?.disconnect();
     voiceObserver = null;
-    for (const btn of voiceBtns.values()) removeBtn(btn);
+    window.removeEventListener("click", onNativeClick, true);
+    onNativeToggle = null;
+    for (const btn of voiceBtns) releaseNative(btn);
     voiceBtns.clear();
     removeSidebarBadges();
   };
@@ -1571,7 +1600,7 @@ function mountVoiceButton(opts) {
 var lastDumpKey = "";
 function dumpVoiceDiagnostics() {
   try {
-    const sites = collectSites();
+    const natives = [...voiceBtns];
     const video = {
       noQuadro: [...tileSessions.keys()],
       emJanela: [...poppedOut.keys()],
@@ -1588,13 +1617,13 @@ function dumpVoiceDiagnostics() {
       }),
       videosNoDom: document.querySelectorAll(".p2ps-tile-video").length
     };
-    const key = sites.map((s) => s.host.className).join("|") + "#" + voiceBtns.size + "#" + sidebarDiag.estrategiaEscolhida + ":" + sidebarDiag.linhas + ":" + sidebarDiag.selosAtivos + "#" + JSON.stringify(video);
+    const key = nativeMode + "#" + natives.length + ":" + natives.filter(isVisible).length + "#" + sidebarDiag.estrategiaEscolhida + ":" + sidebarDiag.linhas + ":" + sidebarDiag.selosAtivos + "#" + JSON.stringify(video);
     if (key === lastDumpKey) return;
     lastDumpKey = key;
     const data = {
       quando: (/* @__PURE__ */ new Date()).toISOString(),
-      pontosEncontrados: sites.length,
-      injetados: [...voiceBtns.values()].map((b) => {
+      botaoNativo: nativeMode,
+      botoesNativos: natives.map((b) => {
         const r = b.getBoundingClientRect();
         return {
           visivel: isVisible(b),
@@ -1624,7 +1653,7 @@ function dumpVoiceDiagnostics() {
 }
 function updateVoiceButton(state) {
   lastState = state;
-  for (const btn of voiceBtns.values()) paintOne(btn);
+  for (const btn of voiceBtns) paintOne(btn);
 }
 var liveUsers = [];
 function applyLiveBadges() {
@@ -2042,6 +2071,8 @@ function openSourcePicker(sources) {
                         <span data-act="audio-label"></span>
                     </label>
                     <span class="p2ps-foot-space"></span>
+                    <button class="p2ps-btn p2ps-btn-secondary" data-act="golive"
+                        title="Abre a transmiss\xE3o normal do Discord (atalho: Shift+clique no bot\xE3o)">Usar Go Live do Discord</button>
                     <button class="p2ps-btn p2ps-btn-secondary" data-act="cancel">Cancelar</button>
                     <button class="p2ps-btn" data-act="ok" disabled>Transmitir</button>
                 </div>
@@ -2113,6 +2144,12 @@ function openSourcePicker(sources) {
     }
     okBtn.addEventListener("click", () => settle(selected));
     backdrop.querySelector('[data-act="cancel"]').addEventListener("click", () => settle(null));
+    const goLiveBtn = backdrop.querySelector('[data-act="golive"]');
+    if (!hasNativeGoLive()) goLiveBtn.remove();
+    goLiveBtn.addEventListener("click", () => {
+      settle(null);
+      openNativeGoLive();
+    });
     backdrop.addEventListener("click", (e) => {
       if (e.target === backdrop) settle(null);
     });
@@ -3938,7 +3975,8 @@ var P2PShare = class {
     });
     this.cleanupVoiceBtn = ui_exports.mountVoiceButton({
       onToggle: toggle,
-      onAnchorChange: (found) => ui_exports.setLauncherHidden(found)
+      onAnchorChange: (found) => ui_exports.setLauncherHidden(found),
+      mode: loadSetting("nativeButton", "p2p")
     });
     const refreshLive = () => {
       const users = [];
@@ -4022,6 +4060,22 @@ var P2PShare = class {
       label.textContent = `Or\xE7amento de upload: ${slider.value} Mbps`;
       saveSetting("uploadBudgetMbps", Number(slider.value));
     });
+    const native = document.createElement("label");
+    native.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:20px;cursor:pointer";
+    const nativeCheck = document.createElement("input");
+    nativeCheck.type = "checkbox";
+    nativeCheck.checked = loadSetting("nativeButton", "p2p") === "p2p";
+    nativeCheck.addEventListener("change", () => {
+      const mode = nativeCheck.checked ? "p2p" : "discord";
+      saveSetting("nativeButton", mode);
+      ui_exports.setNativeButtonMode(mode);
+    });
+    const nativeText = document.createElement("span");
+    nativeText.textContent = 'O bot\xE3o "Compartilhar tela" do Discord transmite via P2P';
+    native.append(nativeCheck, nativeText);
+    const nativeHint = document.createElement("div");
+    nativeHint.textContent = 'Ligado, o bot\xE3o de tela da chamada abre o P2PShare; Shift+clique nele (ou "Usar Go Live do Discord" no seletor) abre a transmiss\xE3o normal do Discord. Desligado, o bot\xE3o volta a ser s\xF3 do Discord e o P2P fica no bot\xE3o flutuante.';
+    nativeHint.style.cssText = "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
     const auto = document.createElement("label");
     auto.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:20px;cursor:pointer";
     const check = document.createElement("input");
@@ -4090,6 +4144,8 @@ var P2PShare = class {
       label,
       hint,
       slider,
+      native,
+      nativeHint,
       auto,
       autoHint,
       audio,
