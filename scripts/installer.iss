@@ -193,14 +193,23 @@ begin
   Result := FileExists(ExpandConstant('{userappdata}\Vencord\dist\patcher.js'));
 end;
 
+{ Por WMI, e nao por "tasklist | find": com Git instalado o find do Git vem
+  antes do find.exe do Windows no PATH e a checagem dava sempre falso. }
 function DiscordRunning(): Boolean;
 var
-  ResultCode: Integer;
+  Locator, Service, Procs: Variant;
 begin
-  { tasklist | find devolve 0 quando acha o processo }
-  Result := Exec(ExpandConstant('{cmd}'),
-                 '/C tasklist /FI "IMAGENAME eq Discord.exe" /NH | find /I "Discord.exe" >NUL',
-                 '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  Result := False;
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Service := Locator.ConnectServer('.', 'root\CIMV2');
+    Procs := Service.ExecQuery(
+      'SELECT ProcessId FROM Win32_Process WHERE Name = ''Discord.exe'' OR ' +
+      'Name = ''DiscordPTB.exe'' OR Name = ''DiscordCanary.exe''');
+    Result := Procs.Count > 0;
+  except
+    Result := False;
+  end;
 end;
 
 { Fecha o Discord, com permissao. False se a pessoa nao quis. }
@@ -219,8 +228,8 @@ begin
     Exit;
   end;
 
-  Exec(ExpandConstant('{cmd}'),
-       '/C taskkill /IM Discord.exe /F >NUL 2>&1 & taskkill /IM DiscordPTB.exe /F >NUL 2>&1 & taskkill /IM DiscordCanary.exe /F >NUL 2>&1',
+  { Caminho absoluto: nao depender do PATH de quem roda o instalador. }
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM Discord.exe /IM DiscordPTB.exe /IM DiscordCanary.exe /F',
        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
   { Espera os processos soltarem os arquivos. }

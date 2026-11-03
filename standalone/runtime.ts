@@ -18,30 +18,124 @@ declare const P2PShareNative: any;
 const native = P2PShareNative;
 const TAG = "[P2PShare]";
 
+/** Console + loader.log (o console da pagina nao fica salvo em lugar nenhum). */
+function report(level: "info" | "warn" | "error", ...args: unknown[]): void {
+    console[level](TAG, ...args);
+    try {
+        native.log(`${level}: ${args.map(a => a instanceof Error ? `${a.message} ${a.stack ?? ""}` : String(a)).join(" ")}`);
+    } catch {
+        // sem log, segue
+    }
+}
+
 // ---------------------------------------------------------------- webpack
 
 let wreq: any = null;
+/** Abaixo disto e um runtime pequeno (o app do Discord tem dezenas de milhares). */
+const MIN_MODULES = 1000;
 
-function getWreq(): any {
-    if (wreq) return wreq;
+/**
+ * Cache de modulos instanciados. No webpack classico e `wreq.c`; no rspack do
+ * Discord `c` pode ser outra coisa, entao procura o objeto do wreq cujas
+ * chaves sao ids de modulo (as mesmas de `wreq.m`) e cujos valores tem
+ * `exports`.
+ */
+function moduleCache(r: any): Record<string, any> | null {
+    if (!r) return null;
+    const factories = r.m;
+    let best: Record<string, any> | null = null;
+    let bestScore = 0;
 
-    const chunk = (window as any).webpackChunkdiscord_app;
+    const candidates: unknown[] = [r.c];
+    try {
+        for (const k of Object.keys(r)) candidates.push(r[k]);
+    } catch {
+        // segue com o que tem
+    }
+
+    for (const cand of candidates) {
+        if (!cand || typeof cand !== "object" || cand === factories) continue;
+        let score = 0;
+        try {
+            for (const id of Object.keys(cand)) {
+                const entry = (cand as any)[id];
+                if (entry && typeof entry === "object" && "exports" in entry) score++;
+            }
+        } catch {
+            continue;
+        }
+        if (score > bestScore) {
+            best = cand as Record<string, any>;
+            bestScore = score;
+        }
+    }
+    return best;
+}
+
+let foundCache: Record<string, any> | null = null;
+/** Para diagnostico: quantos runtimes responderam ao push. */
+const seenRuntimes = new Set<any>();
+
+/** Cache do app, achado uma vez; antes disso, o melhor palpite do momento. */
+function currentCache(): Record<string, any> | null {
+    if (foundCache) return foundCache;
+    const c = moduleCache(getWreq());
+    if (c && Object.keys(c).length >= MIN_MODULES) foundCache = c;
+    return c;
+}
+
+function moduleCount(r: any): number {
+    const c = moduleCache(r);
+    return c ? Object.keys(c).length : 0;
+}
+
+function chunkGlobals(): string[] {
+    return Object.keys(window).filter(k => k.startsWith("webpackChunk"));
+}
+
+/**
+ * Varios runtimes do rspack dividem o mesmo array de chunks: cada push passa
+ * por todos, e o callback e chamado uma vez por runtime. Fica o de maior cache
+ * — o do app; os outros sao runtimes auxiliares com uma centena de modulos.
+ */
+function captureFrom(chunk: any): any {
     if (!chunk?.push) return null;
 
+    let got: any = null;
     const id = Symbol("p2pshare");
-    chunk.push([[id], {}, (r: any) => { wreq = r; }]);
-    // A entrada falsa nao deve ficar na fila do webpack.
     try {
+        chunk.push([[id], {}, (r: any) => {
+            seenRuntimes.add(r);
+            if (moduleCount(r) >= moduleCount(got)) got = r;
+        }]);
+        // A entrada falsa nao deve ficar na fila do webpack.
         const last = chunk[chunk.length - 1];
         if (last?.[0]?.[0] === id) chunk.pop();
     } catch {
         // so higiene
     }
+    return got;
+}
+
+/**
+ * O require do webpack do app. Capturado na hora do uso, e recapturado
+ * enquanto o que temos for pequeno: logo no inicio da pagina o primeiro
+ * runtime a atender a fila nao e o do app.
+ */
+function getWreq(): any {
+    if (moduleCount(wreq) >= MIN_MODULES) return wreq;
+
+    let best = wreq;
+    for (const name of chunkGlobals()) {
+        const r = captureFrom((window as any)[name]);
+        if (moduleCount(r) > moduleCount(best)) best = r;
+    }
+    wreq = best;
     return wreq;
 }
 
 function getModule(filter: (m: any) => unknown, options?: GetModuleOptions): any {
-    return searchModules(getWreq()?.c, filter, options);
+    return searchModules(currentCache(), filter, options);
 }
 
 // ---------------------------------------------------------------- UI
@@ -129,7 +223,7 @@ function showNotice(
             try {
                 b.onClick?.();
             } catch (err) {
-                console.error(TAG, err);
+                report("error", err);
             }
         });
         bar.appendChild(btn);
@@ -165,7 +259,7 @@ function readConfig(name: string): Record<string, unknown> {
         const file = configFile(name);
         if (native.fs.existsSync(file)) data = JSON.parse(native.fs.readFileSync(file, "utf8")) ?? {};
     } catch (err) {
-        console.warn(TAG, "configuração ilegível, começando do zero", err);
+        report("warn", "configuração ilegível, começando do zero", err);
         data = {};
     }
     dataCache.set(name, data!);
@@ -182,7 +276,7 @@ const Data = {
         try {
             native.fs.writeFileSync(configFile(name), JSON.stringify(data, null, 4), "utf8");
         } catch (err) {
-            console.warn(TAG, "não deu para salvar a configuração", err);
+            report("warn", "não deu para salvar a configuração", err);
         }
     }
 };
@@ -378,10 +472,37 @@ function discordReady(): boolean {
 }
 
 function waitForDiscord(): Promise<void> {
+    const since = Date.now();
+    let warned = false;
+
     return new Promise(resolve => {
         const check = () => {
-            if (document.body && discordReady()) resolve();
-            else setTimeout(check, 500);
+            if (document.body && discordReady()) {
+                report("info", `Discord pronto em ${Math.round((Date.now() - since) / 1000)} s`);
+                resolve();
+                return;
+            }
+            // Uma vez so: mostra onde a espera emperrou (webpack? login?).
+            if (!warned && Date.now() - since > 30_000) {
+                warned = true;
+                const w = getWreq();
+                report("warn", "ainda esperando o Discord: " + JSON.stringify({
+                    globais: chunkGlobals().map(k => `${k}:${(window as any)[k]?.length}`),
+                    wreq: Boolean(w),
+                    runtimesVistos: seenRuntimes.size,
+                    caches: [...seenRuntimes].map(moduleCount),
+                    modulos: moduleCount(w),
+                    temM: Boolean(w?.m) ? Object.keys(w.m).length : 0,
+                    props: w ? Object.keys(w).map(k => {
+                        const v = w[k];
+                        const n = v && typeof v === "object" ? Object.keys(v).length : -1;
+                        return `${k}:${typeof v}${n >= 0 ? `(${n})` : ""}`;
+                    }).join(" ") : "",
+                    userStore: Boolean(getModule(m => m?.getCurrentUser && m?.getUser)),
+                    path: location.pathname
+                }));
+            }
+            setTimeout(check, 500);
         };
         check();
     });
@@ -392,7 +513,7 @@ function stopCurrent(): void {
     try {
         instance.stop?.();
     } catch (err) {
-        console.error(TAG, "erro ao parar o plugin", err);
+        report("error", "erro ao parar o plugin", err);
     }
     instance = null;
 }
@@ -405,7 +526,7 @@ async function load(factory: Factory): Promise<void> {
     // Quem ja usa BetterDiscord roda o P2PShare por la. Dois carregadores ao
     // mesmo tempo dariam dois botoes, dois beacons e sessoes duplicadas.
     if ((window as any).BdApi) {
-        console.info(TAG, "BetterDiscord detectado; o carregador próprio fica desligado.");
+        report("info", "BetterDiscord detectado; o carregador próprio fica desligado.");
         return;
     }
 
@@ -419,10 +540,10 @@ async function load(factory: Factory): Promise<void> {
         const plugin = typeof Plugin === "function" ? new Plugin() : Plugin;
         plugin.start?.();
         instance = plugin;
-        console.info(TAG, "plugin iniciado");
+        report("info", "plugin iniciado");
         welcomeOnce();
     } catch (err) {
-        console.error(TAG, "o plugin falhou ao iniciar", err);
+        report("error", "o plugin falhou ao iniciar", err);
         showToast(`P2PShare não iniciou: ${(err as Error)?.message ?? err}`, { type: "error", timeout: 8000 });
     }
 }

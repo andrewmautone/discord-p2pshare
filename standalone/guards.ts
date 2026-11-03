@@ -51,6 +51,11 @@ export function isAppVersionDir(name: string): boolean {
     return /^app-\d+(\.\d+)*$/.test(name);
 }
 
+/** discord.com e os canais ptb/canary. */
+export function isDiscordHost(hostname: string): boolean {
+    return ["discord.com", "ptb.discord.com", "canary.discord.com"].includes(hostname.toLowerCase());
+}
+
 /** Paginas do Discord onde o P2PShare roda: a janela principal, nao popouts nem overlay. */
 export function isMainDiscordPage(pathname: string): boolean {
     return !pathname.startsWith("/popout") && !pathname.startsWith("/overlay");

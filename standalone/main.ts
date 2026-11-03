@@ -1,22 +1,26 @@
 /*
  * P2PShare — parte que roda no processo principal do Discord.
  *
- * Chamado pelo carregador em resources\app\index.js antes do Discord subir.
- * Faz duas coisas, e so:
+ * Chamado pelo gancho (app.asar) antes do Discord subir. Faz duas coisas, e so:
  *
- *  1. Troca o preload da janela principal pelo nosso. O nosso carrega primeiro
- *     o preload original do Discord, inteiro, e depois o P2PShare.
+ *  1. Registra o preload do P2PShare na sessao do Discord, ao lado dos
+ *     preloads dele — o mesmo mecanismo que o proprio Discord usa para o
+ *     Sentry. Nada do Discord e substituido.
  *  2. Quando o Discord se atualiza, ele cria uma pasta app-x.y.z nova sem o
- *     carregador. Copiamos o carregador para la antes do reinicio, para o
+ *     gancho. Colocamos o gancho la na abertura e no fechamento, para o
  *     P2PShare nao sumir a cada atualizacao. Sem tarefa agendada nem processo
  *     extra: so enquanto o proprio Discord esta aberto.
  *
  * Nao mexe em cabecalho HTTP nem em CSP: o Discord ja usa onHeadersReceived,
  * e o Electron aceita um ouvinte so — registrar outro apagaria o deles.
+ *
+ * (Trocar o BrowserWindow via require.cache, como o Vencord fazia, nao pega no
+ * Electron 42: ele entrega "electron" sem passar pelo cache.)
  */
 
 import * as path from "path";
 
+import { fileLog } from "./filelog";
 import { isAppVersionDir } from "./guards";
 
 const electron = require("electron") as typeof import("electron");
@@ -27,43 +31,24 @@ const LOADER_MARKER = "p2pshareLoader";
 
 const CORE_DIR = __dirname;
 const PRELOAD = path.join(CORE_DIR, "preload.js");
-const DISCORD_PRELOAD_NAME = "mainScreenPreload.js";
-
-let originalPreload: string | null = null;
 
 function log(...args: unknown[]): void {
-    console.log("[P2PShare]", ...args);
+    fileLog("main", ...args);
 }
 
-/** Subclasse que so desvia o preload da janela principal do Discord. */
-function patchBrowserWindow(): void {
-    const Base = electron.BrowserWindow;
-
-    class BrowserWindow extends Base {
-        constructor(options?: Electron.BrowserWindowConstructorOptions) {
-            const prefs = options?.webPreferences;
-            if (prefs?.preload && path.basename(prefs.preload) === DISCORD_PRELOAD_NAME) {
-                originalPreload = prefs.preload;
-                prefs.preload = PRELOAD;
+function registerPreload(): void {
+    void electron.app.whenReady().then(() => {
+        try {
+            const s = electron.session.defaultSession as any;
+            if (typeof s.registerPreloadScript === "function") {
+                s.registerPreloadScript({ type: "frame", id: "p2pshare", filePath: PRELOAD });
+            } else {
+                s.setPreloads([...s.getPreloads(), PRELOAD]);
             }
-            super(options);
+            log("preload registrado na sessão do Discord");
+        } catch (err) {
+            log("não deu para registrar o preload", err);
         }
-    }
-
-    Object.assign(BrowserWindow, Base);
-    Object.defineProperty(BrowserWindow, "name", { value: "BrowserWindow", configurable: true });
-
-    // O Discord pega o BrowserWindow do modulo "electron". Trocar a entrada no
-    // cache faz todo require posterior receber a subclasse.
-    const id = require.resolve("electron");
-    const cached = require.cache[id];
-    if (!cached) throw new Error("modulo electron fora do cache");
-    cached.exports = { ...electron, BrowserWindow };
-}
-
-function registerIpc(): void {
-    electron.ipcMain.on("p2pshare:original-preload", event => {
-        event.returnValue = originalPreload;
     });
 }
 
@@ -126,8 +111,7 @@ function watchUpdates(resources: string): void {
 }
 
 export function init({ resources }: { resources: string; }): void {
-    patchBrowserWindow();
-    registerIpc();
+    registerPreload();
     watchUpdates(resources);
     log("carregador ativo");
 }

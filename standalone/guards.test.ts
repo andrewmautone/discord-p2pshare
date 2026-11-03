@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { allowedUrl, insideRoot, isAppVersionDir, isMainDiscordPage } from "./guards";
+import { allowedUrl, insideRoot, isAppVersionDir, isDiscordHost, isMainDiscordPage } from "./guards";
 
 const ROOT = "C:\\Users\\x\\AppData\\Roaming\\P2PShare";
 
@@ -37,6 +37,14 @@ test("isAppVersionDir", () => {
     assert.ok(!isAppVersionDir("app"));
     assert.ok(!isAppVersionDir("packages"));
     assert.ok(!isAppVersionDir("app-1.0.9266.bak"));
+});
+
+test("isDiscordHost", () => {
+    assert.ok(isDiscordHost("discord.com"));
+    assert.ok(isDiscordHost("canary.discord.com"));
+    assert.ok(!isDiscordHost("evil-discord.com"));
+    assert.ok(!isDiscordHost("discord.com.evil.io"));
+    assert.ok(!isDiscordHost(""));
 });
 
 test("isMainDiscordPage", () => {

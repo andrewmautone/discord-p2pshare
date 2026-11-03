@@ -1,9 +1,10 @@
 /*
  * P2PShare — preload da janela do Discord.
  *
- * Roda no lugar do preload do Discord e a primeira coisa que faz e carregar o
- * preload original, inteiro. Depois expoe para a pagina uma ponte PEQUENA
- * (`P2PShareNative`) e injeta o runtime + o plugin.
+ * Registrado como preload de sessao, roda AO LADO do preload do Discord (que
+ * segue intacto). Na pagina principal do Discord expoe uma ponte PEQUENA
+ * (`P2PShareNative`) e injeta o runtime + o plugin; em qualquer outra pagina
+ * (splash, popouts, overlay, sites embutidos) nao faz nada.
  *
  * A ponte nao e o `fs` do Node: so le/escreve dentro de %AppData%\P2PShare,
  * so baixa do GitHub do projeto e so abre o componente de audio. Ver guards.ts.
@@ -14,17 +15,11 @@ import * as fs from "fs";
 import * as https from "https";
 import * as path from "path";
 
-import { allowedUrl, insideRoot, isMainDiscordPage } from "./guards";
+import { fileLog } from "./filelog";
+import { allowedUrl, insideRoot, isDiscordHost, isMainDiscordPage } from "./guards";
 
 const electron = require("electron") as typeof import("electron");
-const { contextBridge, ipcRenderer, webFrame, shell } = electron;
-
-// 1. O Discord primeiro, sempre. Se isto falhar, o Discord falharia sem nos.
-const originalPreload: string | null = ipcRenderer.sendSync("p2pshare:original-preload");
-if (originalPreload) {
-    // require dinamico de proposito: e o arquivo do Discord, nao entra no bundle.
-    require(originalPreload);
-}
+const { contextBridge, webFrame, shell } = electron;
 
 const ROOT = path.join(process.env.APPDATA || "", "P2PShare");
 const CORE = path.join(ROOT, "core");
@@ -34,7 +29,7 @@ const MAX_DOWNLOAD = 64 * 1024 * 1024;
 const HASHES = new Set(["sha256", "sha1", "md5"]);
 
 function log(...args: unknown[]): void {
-    console.log("[P2PShare]", ...args);
+    fileLog("preload", ...args);
 }
 
 function guard(target: string): string {
@@ -174,6 +169,10 @@ const bridge = {
 
     fetch(url: string): Promise<FetchResult> {
         return download(String(url));
+    },
+
+    log(message: string): void {
+        fileLog("runtime", String(message).slice(0, 2000));
     }
 };
 
@@ -212,13 +211,16 @@ function watchPlugin(): void {
 }
 
 function boot(): void {
-    if (!process.isMainFrame || !isMainDiscordPage(location.pathname)) return;
+    // Preload de sessao roda em todo frame: so a pagina principal do Discord.
+    if (!process.isMainFrame || !isDiscordHost(location.hostname) || !isMainDiscordPage(location.pathname)) return;
 
     contextBridge.exposeInMainWorld("P2PShareNative", bridge);
 
     const runtime = fs.readFileSync(path.join(CORE, "runtime.js"), "utf8");
     void webFrame.executeJavaScript(runtime + "\n//# sourceURL=p2pshare:///runtime.js")
+        .then(() => log("runtime injetado"))
         .then(runPlugin)
+        .then(() => log("plugin entregue ao runtime"))
         .then(watchPlugin)
         .catch(err => log("não deu para iniciar o P2PShare", err));
 }
