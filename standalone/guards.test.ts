@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { RELAYS } from "../constants";
-import { allowedRelay, allowedUrl, insideRoot, isAppVersionDir, isDiscordHost, isMainDiscordPage, RELAY_URLS } from "./guards";
+import {
+    allowedRelay,
+    allowedUrl,
+    choosePluginSource,
+    insideRoot,
+    isAppVersionDir,
+    isDiscordHost,
+    isMainDiscordPage,
+    RELAY_URLS
+} from "./guards";
 
 const ROOT = "C:\\Users\\x\\AppData\\Roaming\\P2PShare";
 
@@ -65,4 +74,27 @@ test("allowedRelay so libera os relays da lista", () => {
 
 test("lista da ponte e a do plugin sao a mesma", () => {
     assert.deepEqual([...RELAY_URLS].sort(), [...RELAYS].sort());
+});
+
+const PLUGIN = "/**\n * @name P2PShare\n * @version 1.21.3\n */\nmodule.exports = class {};\n" + "x".repeat(2000);
+const OLDER = PLUGIN.replace("1.21.3", "1.21.2");
+
+test("plugin bom: carrega o atual", () => {
+    assert.deepEqual(choosePluginSource(PLUGIN, OLDER), { source: PLUGIN, from: "current" });
+});
+
+test("plugin vazio (desligamento no meio da atualização): volta para a última cópia boa", () => {
+    assert.deepEqual(choosePluginSource("", OLDER), { source: OLDER, from: "lastGood" });
+    assert.deepEqual(choosePluginSource(null, OLDER), { source: OLDER, from: "lastGood" });
+});
+
+test("plugin corrompido ou cortado ao meio: volta para a última cópia boa", () => {
+    assert.deepEqual(choosePluginSource("\0\0\0\0", OLDER), { source: OLDER, from: "lastGood" });
+    assert.deepEqual(choosePluginSource(PLUGIN.slice(0, 500), OLDER), { source: OLDER, from: "lastGood" });
+    assert.deepEqual(choosePluginSource("<html>404</html>".repeat(100), OLDER), { source: OLDER, from: "lastGood" });
+});
+
+test("sem nada bom: não carrega nada (o Discord abre sem o P2PShare)", () => {
+    assert.equal(choosePluginSource("", ""), null);
+    assert.equal(choosePluginSource(null, null), null);
 });

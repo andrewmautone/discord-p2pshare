@@ -84,11 +84,24 @@ function reinject(resources: string): void {
             // _app.asar e do Vencord: nao empilhamos carregador em cima de outro.
             if (fs.existsSync(path.join(res, "_app.asar"))) continue;
 
+            // O gancho vai primeiro para um temporario ao lado; so depois as duas
+            // trocas de nome, que sao instantaneas. Um desligamento no meio da
+            // copia deixa o Discord intacto, nunca sem app.asar ou com um vazio.
+            const tmp = path.join(res, "app.p2ps-tmp");
+            fs.copyFileSync(stub, tmp);
+            const fd = fs.openSync(tmp, "r+");
+            try {
+                fs.fsyncSync(fd);
+            } finally {
+                fs.closeSync(fd);
+            }
+
             fs.renameSync(asar, orig);
             try {
-                fs.copyFileSync(stub, asar);
+                fs.renameSync(tmp, asar);
             } catch (err) {
                 fs.renameSync(orig, asar); // desfaz: Discord intacto
+                try { fs.unlinkSync(tmp); } catch { /* sobra inofensiva */ }
                 throw err;
             }
             log(`gancho colocado na versao nova do Discord: ${name}`);

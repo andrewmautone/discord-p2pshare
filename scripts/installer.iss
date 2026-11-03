@@ -75,6 +75,7 @@ Source: "..\release\standalone\core\main.js";          DestDir: "{app}\core";   
 Source: "..\release\standalone\core\preload.js";       DestDir: "{app}\core";        Flags: ignoreversion; Check: StandaloneMode
 Source: "..\release\standalone\core\runtime.js";       DestDir: "{app}\core";        Flags: ignoreversion; Check: StandaloneMode
 Source: "..\release\standalone\app.asar";              DestDir: "{app}\core";        Flags: ignoreversion; Check: StandaloneMode
+Source: "..\release\standalone\core\p2pshare-launcher.vbs"; DestDir: "{app}\core";   Flags: ignoreversion; Check: StandaloneMode
 
 ; Modo BetterDiscord (igual ao instalador antigo)
 Source: "..\release\P2PShare.plugin.js";               DestDir: "{userappdata}\BetterDiscord\plugins"; Flags: ignoreversion; Check: BdMode
@@ -365,12 +366,87 @@ begin
     Exit;
   end;
 
-  if not RenameFile(Asar, Orig) then Exit;
+  { Gancho primeiro num temporario; depois as duas trocas de nome. Um
+    desligamento no meio da copia deixa o Discord intacto. }
+  if not FileCopy(Stub, Res + '\app.p2ps-tmp', False) then Exit;
 
-  if FileCopy(Stub, Asar, False) then
+  if not RenameFile(Asar, Orig) then
+  begin
+    DeleteFile(Res + '\app.p2ps-tmp');
+    Exit;
+  end;
+
+  if RenameFile(Res + '\app.p2ps-tmp', Asar) then
     PatchedCount := PatchedCount + 1
   else
+  begin
     RenameFile(Orig, Asar); { desfaz: Discord intacto }
+    DeleteFile(Res + '\app.p2ps-tmp');
+  end;
+end;
+
+{ ------------------------------------------------------------ atalho e logon }
+
+const
+  LAUNCHER = 'p2pshare-launcher.vbs';
+  RUN_KEY = 'Software\Microsoft\Windows\CurrentVersion\Run';
+
+function WscriptExe(): String;
+begin
+  Result := ExpandConstant('{sys}\wscript.exe');
+end;
+
+procedure RunLauncher(const Vbs, Args: String);
+var
+  ResultCode: Integer;
+begin
+  { Falha aqui nunca derruba a instalacao: atalho e logon sao extras. }
+  Exec(WscriptExe(), '//B //Nologo "' + Vbs + '" ' + Args, '', SW_HIDE,
+       ewWaitUntilTerminated, ResultCode);
+end;
+
+{ Copia o launcher para cada Discord instalado (fora da pasta do P2PShare:
+  se ela sumir, o atalho continua abrindo o Discord), troca os atalhos e
+  liga o reparo do gancho no logon do Windows. }
+procedure InstallLauncher();
+var
+  I: Integer;
+  Src, First: String;
+begin
+  Src := ExpandConstant('{app}\core\') + LAUNCHER;
+  First := '';
+  for I := 0 to 3 do
+    if DirExists(ChannelDir(I)) then
+      if FileCopy(Src, ChannelDir(I) + '\' + LAUNCHER, False) then
+        if First = '' then First := ChannelDir(I) + '\' + LAUNCHER;
+  if First = '' then Exit;
+
+  RunLauncher(First, '/shortcuts install');
+  RegWriteStringValue(HKEY_CURRENT_USER, RUN_KEY, 'P2PShare',
+    '"' + WscriptExe() + '" //B //Nologo "' + First + '" /repair');
+end;
+
+procedure UninstallLauncher();
+var
+  I: Integer;
+  Vbs: String;
+  Restored: Boolean;
+begin
+  RegDeleteValue(HKEY_CURRENT_USER, RUN_KEY, 'P2PShare');
+  Restored := False;
+  for I := 0 to 3 do
+  begin
+    Vbs := ChannelDir(I) + '\' + LAUNCHER;
+    if FileExists(Vbs) then
+    begin
+      if not Restored then
+      begin
+        RunLauncher(Vbs, '/shortcuts restore');
+        Restored := True;
+      end;
+      DeleteFile(Vbs);
+    end;
+  end;
 end;
 
 procedure PatchDiscord();
@@ -624,6 +700,8 @@ begin
            'Os arquivos ficaram em ' + ExpandConstant('{app}') + '.', mbError, MB_OK);
     Exit;
   end;
+
+  InstallLauncher();
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
@@ -681,6 +759,8 @@ begin
   begin
     Exec(ExpandConstant('{cmd}'), '/C taskkill /IM p2pshare-audio.exe /F >NUL 2>&1',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    { Atalhos de volta ao Discord direto antes de apagar o launcher. }
+    UninstallLauncher();
     UnpatchDiscord();
   end;
 

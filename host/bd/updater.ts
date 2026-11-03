@@ -57,13 +57,42 @@ async function fetchText(url: string): Promise<string | null> {
     }
 }
 
+/**
+ * Grava o plugin novo sem nunca deixar o arquivo pela metade.
+ *
+ * Gravar direto por cima já deixou o plugin com 0 bytes num desligamento
+ * logo depois de uma atualização — e plugin vazio não roda nem o próprio
+ * atualizador. No BetterDiscord: escreve ao lado, força para o disco e troca
+ * o nome (atômico no NTFS); o nome temporário não termina em .plugin.js, então
+ * o BetterDiscord não tenta carregá-lo. No carregador standalone o `fs` é a
+ * ponte, cujo writeFileSync já faz isso (desde a 1.21.3).
+ */
+function writeSafely(fs: any, target: string, source: string): void {
+    const atomic = ["openSync", "writeSync", "fsyncSync", "closeSync", "renameSync"]
+        .every(fn => typeof fs[fn] === "function");
+    if (!atomic) {
+        fs.writeFileSync(target, source, "utf8");
+        return;
+    }
+
+    const tmp = `${target}.p2ps-tmp`;
+    const fd = fs.openSync(tmp, "w");
+    try {
+        fs.writeSync(fd, source, null, "utf8");
+        fs.fsyncSync(fd);
+    } finally {
+        fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, target);
+}
+
 function install(source: string, version: string): boolean {
     try {
         const fs = require("fs");
         const path = require("path");
         const target = path.join(BdApi.Plugins.folder, FILE_NAME);
 
-        fs.writeFileSync(target, source, "utf8");
+        writeSafely(fs, target, source);
 
         // Atualização automática não pode ser invisível: quem usa tem o
         // direito de saber que o código mudou embaixo dele.

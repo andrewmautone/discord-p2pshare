@@ -16,7 +16,7 @@ import * as https from "https";
 import * as path from "path";
 
 import { fileLog } from "./filelog";
-import { allowedUrl, insideRoot, isDiscordHost, isMainDiscordPage } from "./guards";
+import { allowedUrl, choosePluginSource, insideRoot, isDiscordHost, isMainDiscordPage } from "./guards";
 
 const electron = require("electron") as typeof import("electron");
 const { contextBridge, webFrame, shell, ipcRenderer } = electron;
@@ -24,6 +24,8 @@ const { contextBridge, webFrame, shell, ipcRenderer } = electron;
 const ROOT = path.join(process.env.APPDATA || "", "P2PShare");
 const CORE = path.join(ROOT, "core");
 const PLUGIN_FILE = path.join(ROOT, "P2PShare.plugin.js");
+/** Última versão do plugin que carregou de verdade: reserva para arquivo vazio/corrompido. */
+const LAST_GOOD_FILE = path.join(ROOT, "P2PShare.plugin.lastgood.js");
 const HELPER_FILE = path.join(ROOT, "p2pshare-audio.exe");
 const MAX_DOWNLOAD = 64 * 1024 * 1024;
 const HASHES = new Set(["sha256", "sha1", "md5"]);
@@ -36,6 +38,33 @@ function guard(target: string): string {
     const full = insideRoot(ROOT, target);
     if (!full) throw new Error(`P2PShare: acesso fora da pasta do P2PShare negado: ${target}`);
     return full;
+}
+
+/**
+ * Grava sem nunca deixar o arquivo pela metade.
+ *
+ * Escreve ao lado, força para o disco e só então troca pelo nome final (a
+ * troca é atômica no NTFS). Um desligamento no meio deixa o arquivo antigo
+ * inteiro, nunca um de 0 bytes — foi o que aconteceu com uma gravação direta.
+ */
+function writeAtomic(full: string, data: string | Buffer): void {
+    const tmp = `${full}.p2ps-tmp`;
+    const fd = fs.openSync(tmp, "w");
+    try {
+        fs.writeSync(fd, typeof data === "string" ? Buffer.from(data, "utf8") : data);
+        fs.fsyncSync(fd);
+    } finally {
+        fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, full);
+}
+
+function readOrNull(file: string): string | null {
+    try {
+        return fs.readFileSync(file, "utf8");
+    } catch {
+        return null;
+    }
 }
 
 function encodingOf(opt: unknown): BufferEncoding | null {
@@ -125,8 +154,12 @@ const bridge = {
         writeFileSync(p: string, data: string | Uint8Array, opt?: unknown): void {
             const full = guard(p);
             fs.mkdirSync(path.dirname(full), { recursive: true });
-            if (typeof data === "string") fs.writeFileSync(full, data, { encoding: encodingOf(opt) ?? "utf8" });
-            else fs.writeFileSync(full, Buffer.from(data));
+            // Toda gravação do plugin (inclusive a do auto-update de versões
+            // antigas, que grava direto) passa a ser atômica.
+            const buf = typeof data === "string"
+                ? Buffer.from(data, encodingOf(opt) ?? "utf8")
+                : Buffer.from(data);
+            writeAtomic(full, buf);
         },
         unlinkSync(p: string): void {
             fs.unlinkSync(guard(p));
@@ -199,18 +232,55 @@ const bridge = {
     }
 };
 
-async function runPlugin(): Promise<void> {
-    if (!fs.existsSync(PLUGIN_FILE)) {
-        log("P2PShare.plugin.js não encontrado em", ROOT);
+/** Ignora o aviso do watcher causado pela nossa própria restauração. */
+let ignoreChangesUntil = 0;
+
+/**
+ * Carrega o plugin. Arquivo vazio ou corrompido: usa a última cópia boa e
+ * a devolve ao lugar. Nada aqui impede o Discord de abrir: no pior caso ele
+ * abre sem o P2PShare.
+ */
+async function runPlugin(reason: "boot" | "change" = "boot"): Promise<void> {
+    const current = readOrNull(PLUGIN_FILE);
+    const chosen = choosePluginSource(current, readOrNull(LAST_GOOD_FILE));
+
+    if (!chosen) {
+        log(current === null
+            ? "P2PShare.plugin.js não encontrado e sem cópia boa; o Discord segue sem o P2PShare"
+            : "P2PShare.plugin.js inválido e sem cópia boa; o Discord segue sem o P2PShare");
         return;
     }
 
-    const source = fs.readFileSync(PLUGIN_FILE, "utf8");
+    if (chosen.from === "lastGood") {
+        // Arquivo novo pela metade (versão antiga gravando direto): não troca
+        // o plugin que já está rodando por nada.
+        if (reason === "change") {
+            log("plugin no disco está inválido; mantendo o que está rodando");
+            return;
+        }
+        log(`P2PShare.plugin.js ${current === null ? "ausente" : `inválido (${current.length} bytes)`}; usando a última cópia boa`);
+        try {
+            ignoreChangesUntil = Date.now() + 3000;
+            writeAtomic(PLUGIN_FILE, chosen.source);
+        } catch (err) {
+            log("não deu para restaurar o plugin a partir da cópia boa", err);
+        }
+    }
+
     await webFrame.executeJavaScript(
         "P2PShareLoader.load(function (module, exports, require, BdApi, process) {\n" +
-        source +
+        chosen.source +
         "\n});\n//# sourceURL=p2pshare:///P2PShare.plugin.js"
     );
+
+    // Carregou: vira a nova reserva.
+    if (chosen.from === "current" && readOrNull(LAST_GOOD_FILE) !== chosen.source) {
+        try {
+            writeAtomic(LAST_GOOD_FILE, chosen.source);
+        } catch (err) {
+            log("não deu para guardar a cópia boa do plugin", err);
+        }
+    }
 }
 
 /**
@@ -222,10 +292,11 @@ function watchPlugin(): void {
     try {
         fs.watch(ROOT, (_event, name) => {
             if (name !== "P2PShare.plugin.js") return;
+            if (Date.now() < ignoreChangesUntil) return;
             if (timer) clearTimeout(timer);
             timer = setTimeout(() => {
                 log("plugin mudou no disco, recarregando");
-                void runPlugin().catch(err => log("falha ao recarregar o plugin", err));
+                void runPlugin("change").catch(err => log("falha ao recarregar o plugin", err));
             }, 500);
         });
     } catch (err) {

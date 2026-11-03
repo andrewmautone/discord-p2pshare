@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.21.2
+ * @version 1.21.3
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 var __defProp = Object.defineProperty;
@@ -128,7 +128,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.21.2";
+var PLUGIN_VERSION = "1.21.3";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "f78221d17c22d2cdc8c4067a9c27e8791c78f88eda70561258b1b80f235936e5";
@@ -3918,12 +3918,28 @@ async function fetchText(url) {
     return null;
   }
 }
+function writeSafely(fs, target, source) {
+  const atomic = ["openSync", "writeSync", "fsyncSync", "closeSync", "renameSync"].every((fn) => typeof fs[fn] === "function");
+  if (!atomic) {
+    fs.writeFileSync(target, source, "utf8");
+    return;
+  }
+  const tmp = `${target}.p2ps-tmp`;
+  const fd = fs.openSync(tmp, "w");
+  try {
+    fs.writeSync(fd, source, null, "utf8");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, target);
+}
 function install(source, version) {
   try {
     const fs = require("fs");
     const path = require("path");
     const target = path.join(BdApi.Plugins.folder, FILE_NAME);
-    fs.writeFileSync(target, source, "utf8");
+    writeSafely(fs, target, source);
     BdApi.UI.showToast(
       `P2PShare atualizado para ${version}.`,
       { type: "success" }

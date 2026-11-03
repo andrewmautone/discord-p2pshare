@@ -58,6 +58,8 @@ await writeFile(resolve(standaloneDir, "app.asar"), packAsar({
     "index.js": await readFile(resolve(root, "standalone/stub/index.js"), "utf8"),
     "package.json": await readFile(resolve(root, "standalone/stub/package.json"), "utf8")
 }));
+// Atalho do Discord passando pelo P2PShare e reparo no logon do Windows.
+await copyFile(resolve(root, "standalone/launcher.vbs"), resolve(coreDir, "p2pshare-launcher.vbs"));
 await copyFile(resolve(root, "scripts/LEIA-ME.txt"), resolve(outDir, "LEIA-ME.txt"));
 console.log("carregador próprio: release/standalone/");
 

@@ -11,6 +11,26 @@
 
 import * as path from "path";
 
+import { looksLikePlugin } from "../updater";
+
+/**
+ * Qual código do plugin carregar: o arquivo atual, a última cópia boa, ou
+ * nenhum.
+ *
+ * Um desligamento no meio de uma atualização já deixou o plugin com 0 bytes.
+ * Plugin vazio não roda, e com ele não roda o próprio atualizador: sem esta
+ * escolha a instalação ficava quebrada até reinstalar. Em qualquer caso o
+ * Discord abre; isto só decide se o P2PShare vem junto.
+ */
+export function choosePluginSource(
+    current: string | null,
+    lastGood: string | null
+): { source: string; from: "current" | "lastGood"; } | null {
+    if (current !== null && looksLikePlugin(current, "P2PShare")) return { source: current, from: "current" };
+    if (lastGood !== null && looksLikePlugin(lastGood, "P2PShare")) return { source: lastGood, from: "lastGood" };
+    return null;
+}
+
 /** Hosts de onde o P2PShare baixa atualizacao e o componente de audio. */
 export const ALLOWED_HOSTS = [
     "github.com",
