@@ -99,6 +99,11 @@ let bundled = await readFile(outFile, "utf8");
 bundled = bundled.replace("__HELPER_SHA256__", helperHash);
 await writeFile(outFile, META + bundled, "utf8");
 
+// Só o número da versão: é o que a atualização automática checa a cada
+// poucos minutos (VERSION_URL), em vez de baixar o plugin inteiro. Vai para o
+// git no mesmo commit do plugin.
+await writeFile(resolve(outDir, "VERSION"), `${pkgVersion}\n`, "utf8");
+
 // Só o plugin e as instruções. Nada de script: o BetterDiscord já instala
 // plugin arrastando o arquivo, e um .bat/.ps1 no zip só serve para disparar
 // aviso de SmartScreen e assustar quem vai instalar.

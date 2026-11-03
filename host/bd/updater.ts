@@ -5,8 +5,8 @@
  */
 
 import { isBroadcasting } from "../../broadcast";
-import { PLUGIN_VERSION, UPDATE_URL } from "../../constants";
-import { isNewer, looksLikePlugin, parseMetaVersion } from "../../updater";
+import { PLUGIN_VERSION, UPDATE_URL, VERSION_URL } from "../../constants";
+import { isNewer, looksLikePlugin, parseMetaVersion, parseVersionFile } from "../../updater";
 import { watchingCount } from "../../watch";
 import { loadSetting } from "./settings";
 
@@ -17,8 +17,13 @@ const FILE_NAME = "P2PShare.plugin.js";
 
 /** Quando ocupado, tenta de novo daqui a pouco em vez de desistir de vez. */
 const RETRY_WHEN_BUSY_MS = 5 * 60 * 1000;
-/** Checagem periódica, para quem deixa o Discord aberto por dias. */
-const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/**
+ * Checagem periódica, para quem deixa o Discord aberto por dias.
+ *
+ * Frequente de propósito: um conserto chega a todos em minutos. Barato
+ * porque cada checagem baixa só o arquivo VERSION (poucos bytes).
+ */
+const CHECK_INTERVAL_MS = 10 * 60 * 1000;
 
 /**
  * Gravar o arquivo faz o BetterDiscord recarregar o plugin na hora
@@ -31,13 +36,14 @@ function isBusy(): boolean {
     return isBroadcasting() || watchingCount() > 0;
 }
 
-async function fetchLatest(): Promise<string | null> {
+async function fetchText(url: string): Promise<string | null> {
     try {
         // Mesmo caminho do componente de áudio: fora da política de conteúdo
-        // do Discord, que barra parte dos hosts do GitHub.
+        // do Discord, que barra parte dos hosts do GitHub. No carregador
+        // standalone, BdApi.Net.fetch passa pela ponte do processo principal.
         const res = BdApi.Net?.fetch
-            ? await BdApi.Net.fetch(UPDATE_URL, { redirect: "follow" })
-            : await fetch(UPDATE_URL, { cache: "no-store" });
+            ? await BdApi.Net.fetch(url, { redirect: "follow" })
+            : await fetch(url, { cache: "no-store" });
 
         if (!res.ok) {
             console.warn(`[P2PShare] updater: host respondeu ${res.status}`);
@@ -112,16 +118,39 @@ function offer(source: string, version: string): void {
  * Falha em silêncio: quem abriu o Discord quer usar o Discord, não lidar com
  * um erro de updater.
  */
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Transmitindo ou assistindo: tenta de novo daqui a pouco. Um adiamento só
+ * por vez — com a checagem a cada 10 min, uma live longa empilharia vários.
+ */
+function retryLater(): void {
+    if (retryTimer !== null) return;
+    retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void checkForUpdate();
+    }, RETRY_WHEN_BUSY_MS);
+}
+
 export async function checkForUpdate(): Promise<void> {
     if (!UPDATE_URL) return;
 
     if (isBusy()) {
         // Nem checa: atualizar agora derrubaria a sessão em andamento.
-        setTimeout(() => { void checkForUpdate(); }, RETRY_WHEN_BUSY_MS);
+        retryLater();
         return;
     }
 
-    const source = await fetchLatest();
+    // Primeiro só o número publicado; o plugin inteiro só se for mais novo.
+    if (VERSION_URL) {
+        const text = await fetchText(VERSION_URL);
+        const published = text ? parseVersionFile(text) : null;
+        if (published && !isNewer(published, PLUGIN_VERSION)) return;
+        // Sem VERSION legível (ainda não publicado, host fora): cai no
+        // caminho antigo, baixando o plugin para ler o @version.
+    }
+
+    const source = await fetchText(UPDATE_URL);
     if (!source) return;
 
     if (!looksLikePlugin(source, PLUGIN_NAME)) {
@@ -134,7 +163,7 @@ export async function checkForUpdate(): Promise<void> {
 
     // Entre baixar e gravar passou um await; a sessão pode ter começado.
     if (isBusy()) {
-        setTimeout(() => { void checkForUpdate(); }, RETRY_WHEN_BUSY_MS);
+        retryLater();
         return;
     }
 
@@ -150,5 +179,9 @@ export function startUpdateChecks(): () => void {
     void checkForUpdate();
 
     const timer = setInterval(() => { void checkForUpdate(); }, CHECK_INTERVAL_MS);
-    return () => clearInterval(timer);
+    return () => {
+        clearInterval(timer);
+        if (retryTimer !== null) clearTimeout(retryTimer);
+        retryTimer = null;
+    };
 }

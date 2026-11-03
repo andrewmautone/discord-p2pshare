@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { isNewer, looksLikePlugin,parseMetaVersion } from "./updater";
+import { isNewer, looksLikePlugin, parseMetaVersion, parseVersionFile } from "./updater";
 
 describe("parseMetaVersion", () => {
     it("lê a versão do cabeçalho do BetterDiscord", () => {
@@ -86,5 +86,19 @@ describe("looksLikePlugin", () => {
 
     it("recusa conteúdo suspeitosamente curto", () => {
         assert.equal(looksLikePlugin("/**@name P2PShare*/module.exports={}", "P2PShare"), false);
+    });
+});
+
+describe("parseVersionFile", () => {
+    it("lê a versão com quebra de linha no fim", () => {
+        assert.equal(parseVersionFile("1.21.2\n"), "1.21.2");
+        assert.equal(parseVersionFile("  1.21.2\r\n"), "1.21.2");
+    });
+
+    it("recusa o que não é versão", () => {
+        assert.equal(parseVersionFile(""), null);
+        assert.equal(parseVersionFile("<!DOCTYPE html><html>"), null);
+        assert.equal(parseVersionFile("404: Not Found"), null);
+        assert.equal(parseVersionFile("1.21.x"), null);
     });
 });

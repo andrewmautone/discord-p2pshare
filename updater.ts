@@ -50,6 +50,18 @@ export function isNewer(remote: string, local: string): boolean {
 }
 
 /**
+ * Lê o arquivo `VERSION` publicado ao lado do plugin.
+ *
+ * É o que a checagem frequente baixa: poucos bytes em vez do plugin inteiro.
+ * Só aceita algo com cara de versão; qualquer outra resposta (página de
+ * erro, HTML de um host fora do ar) vale como "não sei", e não atualiza.
+ */
+export function parseVersionFile(text: string): string | null {
+    const v = text.trim();
+    return /^\d+(\.\d+){0,3}$/.test(v) ? v : null;
+}
+
+/**
  * O que baixamos parece mesmo este plugin?
  *
  * Sem esta checagem, um host fora do ar devolvendo uma página de erro em HTML

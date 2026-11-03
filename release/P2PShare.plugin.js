@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.21.1
+ * @version 1.21.2
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 var __defProp = Object.defineProperty;
@@ -128,11 +128,12 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.21.1";
+var PLUGIN_VERSION = "1.21.2";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "f78221d17c22d2cdc8c4067a9c27e8791c78f88eda70561258b1b80f235936e5";
 var UPDATE_URL = "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
+var VERSION_URL = "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/VERSION";
 var ICE_SERVERS = [
   { urls: "stun:stun.cloudflare.com:3478" },
   { urls: "stun:stun.l.google.com:19302" },
@@ -3785,6 +3786,10 @@ function isNewer(remote, local) {
   }
   return false;
 }
+function parseVersionFile(text) {
+  const v = text.trim();
+  return /^\d+(\.\d+){0,3}$/.test(v) ? v : null;
+}
 function looksLikePlugin(source, expectedName) {
   if (source.length < 1e3) return false;
   if (!source.includes("module.exports")) return false;
@@ -3896,13 +3901,13 @@ function initWatcher() {
 var PLUGIN_NAME = "P2PShare";
 var FILE_NAME = "P2PShare.plugin.js";
 var RETRY_WHEN_BUSY_MS = 5 * 60 * 1e3;
-var CHECK_INTERVAL_MS = 6 * 60 * 60 * 1e3;
+var CHECK_INTERVAL_MS = 10 * 60 * 1e3;
 function isBusy() {
   return isBroadcasting() || watchingCount() > 0;
 }
-async function fetchLatest() {
+async function fetchText(url) {
   try {
-    const res = BdApi.Net?.fetch ? await BdApi.Net.fetch(UPDATE_URL, { redirect: "follow" }) : await fetch(UPDATE_URL, { cache: "no-store" });
+    const res = BdApi.Net?.fetch ? await BdApi.Net.fetch(url, { redirect: "follow" }) : await fetch(url, { cache: "no-store" });
     if (!res.ok) {
       console.warn(`[P2PShare] updater: host respondeu ${res.status}`);
       return null;
@@ -3958,15 +3963,26 @@ function offer(source, version) {
     }
   );
 }
+var retryTimer = null;
+function retryLater() {
+  if (retryTimer !== null) return;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    void checkForUpdate();
+  }, RETRY_WHEN_BUSY_MS);
+}
 async function checkForUpdate() {
   if (!UPDATE_URL) return;
   if (isBusy()) {
-    setTimeout(() => {
-      void checkForUpdate();
-    }, RETRY_WHEN_BUSY_MS);
+    retryLater();
     return;
   }
-  const source = await fetchLatest();
+  if (VERSION_URL) {
+    const text = await fetchText(VERSION_URL);
+    const published = text ? parseVersionFile(text) : null;
+    if (published && !isNewer(published, PLUGIN_VERSION)) return;
+  }
+  const source = await fetchText(UPDATE_URL);
   if (!source) return;
   if (!looksLikePlugin(source, PLUGIN_NAME)) {
     console.warn("[P2PShare] updater: resposta n\xE3o parece o plugin, ignorando");
@@ -3975,9 +3991,7 @@ async function checkForUpdate() {
   const remote = parseMetaVersion(source);
   if (!remote || !isNewer(remote, PLUGIN_VERSION)) return;
   if (isBusy()) {
-    setTimeout(() => {
-      void checkForUpdate();
-    }, RETRY_WHEN_BUSY_MS);
+    retryLater();
     return;
   }
   if (loadSetting("autoUpdate", true)) install(source, remote);
@@ -3988,7 +4002,11 @@ function startUpdateChecks() {
   const timer = setInterval(() => {
     void checkForUpdate();
   }, CHECK_INTERVAL_MS);
-  return () => clearInterval(timer);
+  return () => {
+    clearInterval(timer);
+    if (retryTimer !== null) clearTimeout(retryTimer);
+    retryTimer = null;
+  };
 }
 
 // bd-entry.ts

@@ -9,7 +9,7 @@ export const PROTOCOL_VERSION = 1;
 export const PLUGIN_URL = "https://github.com/andrewmautone/discord-p2pshare";
 
 /** Versão publicada. O build do BetterDiscord escreve isto no cabeçalho. */
-export const PLUGIN_VERSION = "1.21.1";
+export const PLUGIN_VERSION = "1.21.2";
 
 /** Link direto do instalador na release mais recente. */
 export const DOWNLOAD_URL =
@@ -53,6 +53,16 @@ export const HELPER_SHA256 = "__HELPER_SHA256__";
 
 export const UPDATE_URL =
     "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
+
+/**
+ * Só o número da versão publicada (gerado pelo build ao lado do plugin).
+ *
+ * A checagem roda a cada poucos minutos: baixar o plugin inteiro toda vez
+ * gastaria banda à toa e encostaria no limite do raw do GitHub. O arquivo
+ * completo só vem quando este número é maior que o nosso.
+ */
+export const VERSION_URL =
+    "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/VERSION";
 
 /**
  * Servidores STUN, escolhidos por redundância de operador.
