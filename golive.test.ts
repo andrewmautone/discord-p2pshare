@@ -7,7 +7,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isShareScreenLabel, shouldIntercept, type ClickContext } from "./golive";
+import {
+    isBlockedIcon,
+    isShareScreenIcon,
+    isShareScreenLabel,
+    offersShare,
+    shouldIntercept,
+    type ClickContext
+} from "./golive";
 
 test("reconhece o botão de compartilhar tela em pt-BR e inglês", () => {
     assert.equal(isShareScreenLabel("Compartilhar sua tela"), true);
@@ -29,7 +36,7 @@ const base: ClickContext = {
     bypass: false,
     shiftKey: false,
     p2pActive: false,
-    nativeLabel: "Compartilhar sua tela"
+    nativeOffersShare: true
 };
 
 test("clique simples abre o P2PShare", () => {
@@ -50,9 +57,32 @@ test("clique que nós mesmos disparamos para abrir o Go Live passa", () => {
 });
 
 test("com Go Live do Discord no ar, o botão de parar continua dele", () => {
-    assert.equal(shouldIntercept({ ...base, nativeLabel: "Parar de transmitir" }), false);
+    assert.equal(shouldIntercept({ ...base, nativeOffersShare: false }), false);
 });
 
 test("transmitindo via P2P, o clique abre o nosso menu", () => {
-    assert.equal(shouldIntercept({ ...base, p2pActive: true, nativeLabel: "qualquer" }), true);
+    assert.equal(shouldIntercept({ ...base, p2pActive: true, nativeOffersShare: false }), true);
+});
+
+// Paths reais do painel de voz do Discord (03/11/2026), botao "indisponivel".
+const BLOCKED = "M15.46 15.46a5 5 0 0 1 7.07 0 5 5 0 0 1-7.07 7.07 5 5 0 0 1 0-7.07Zm2.25 6.25a3 3 0 0 0 4-4l-4 4Zm2.58-5.42a3 3 0 0 0-4 4l4-4Z";
+const SCREEN_ARROW = "M19 2a3 3 0 0 1 3 3v6.88c0 .37-.38.61-.73.5a6.99 6.99 0 0 0-8.3 3.06c-.2.33-.54.56-.93.56H5a3 3 0 0 1-3-3V5a3 3 0 0 1 3-3h14Zm-4.3 2.3a1 1 0 1 0-1.4 1.4L14.58 7H13a6 6 0 0 0-6 6 1 1 0 1 0 2 0 4 4 0 0 1 4-4h1.59l-1.3 1.3a1 1 0 1 0 1.42 1.4l3-3a1 1 0 0 0 0-1.4l-3-3Z";
+const CAMERA = "M15 4a3 3 0 0 1 3 3v2.12a1 1 0 0 1 .55-.9l3-1.5a1 1 0 0 1 1.45.9v4.68c0 .4-.46.65-.82.46a7 7 0 0 0-10.16 6.66c.01.31-.22.58-.52.58H4a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h11Z";
+
+test("reconhece o botao de tela sem rotulo pelo icone, inclusive o indisponivel", () => {
+    assert.equal(isShareScreenIcon([BLOCKED, SCREEN_ARROW]), true);
+    assert.equal(isBlockedIcon([BLOCKED, SCREEN_ARROW]), true);
+});
+
+test("a camera bloqueada nao e' o botao de tela", () => {
+    assert.equal(isShareScreenIcon([BLOCKED, CAMERA]), false);
+});
+
+test("o tooltip 'indisponivel' ainda e' compartilhar tela", () => {
+    assert.equal(offersShare("Compartilhamento de tela indisponível", []), true);
+});
+
+test("sem rotulo, decide pelo icone", () => {
+    assert.equal(offersShare("", [SCREEN_ARROW]), true);
+    assert.equal(offersShare("", [CAMERA]), false);
 });

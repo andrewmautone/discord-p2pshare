@@ -952,11 +952,22 @@ function isShareScreenLabel(label) {
   if (!/compartilh|share/.test(l)) return false;
   return !/cheia|fullscreen|convite|invite|link|atividade|activit/.test(l);
 }
+var SHARE_ARROW_PATH = "1.4l3-3a1 1 0 0 0 0-1.4l-3-3";
+var BLOCKED_BADGE_PATH = "M15.46 15.46a5 5 0 0 1 7.07 0";
+function isShareScreenIcon(paths) {
+  return paths.some((d) => d.includes(SHARE_ARROW_PATH) || d.startsWith("M2 4.5C2 3.397"));
+}
+function isBlockedIcon(paths) {
+  return paths.some((d) => d.startsWith(BLOCKED_BADGE_PATH));
+}
+function offersShare(label, paths) {
+  return label ? isShareScreenLabel(label) : isShareScreenIcon(paths);
+}
 function shouldIntercept(ctx) {
   if (ctx.bypass || ctx.mode !== "p2p") return false;
   if (ctx.shiftKey) return false;
   if (ctx.p2pActive) return true;
-  return isShareScreenLabel(ctx.nativeLabel);
+  return ctx.nativeOffersShare;
 }
 
 // host/bd/ui.ts
@@ -1154,6 +1165,15 @@ var CSS = `
 /* Botao nativo do Discord assumido pelo P2PShare. Marcado por atributo, nao
    por classe: o React reescreve o className a cada mudanca de estado. */
 [data-p2ps-native] { position: relative; }
+/* Botao "indisponivel" assumido: some o icone de bloqueio, fica o nosso. */
+[data-p2ps-unavail] svg:not(.p2ps-icon) { display: none !important; }
+/* Tooltip do Discord com o nosso texto: o original (do React) fica oculto. */
+[data-p2ps-tip] { font-size: 0 !important; }
+[data-p2ps-tip]::after {
+    content: attr(data-p2ps-tip);
+    font-size: 14px;
+    line-height: 18px;
+}
 .p2ps-voice-count {
     position: absolute;
     bottom: 0;
@@ -1462,7 +1482,9 @@ function findNativeButtons() {
   for (const btn of document.querySelectorAll(`[${NATIVE_ATTR}]`)) {
     found.add(btn);
   }
-  for (const path of document.querySelectorAll('button svg path[d^="M2 4.5C2 3.397"]')) {
+  const byIcon = `button svg path[d^="M2 4.5C2 3.397"], button svg path[d*="${SHARE_ARROW_PATH}"]`;
+  for (const path of document.querySelectorAll(byIcon)) {
+    if (path.closest(".p2ps-icon")) continue;
     const btn = path.closest("button");
     if (btn && !isOurs(btn)) found.add(btn);
   }
@@ -1475,10 +1497,54 @@ function findNativeButtons() {
   }
   return [...found];
 }
+function nativePathsOf(btn) {
+  return [...btn.querySelectorAll("svg:not(.p2ps-icon) path")].map((p) => p.getAttribute("d") ?? "");
+}
+var UNAVAIL_ATTR = "data-p2ps-unavail";
+var TIP_ATTR = "data-p2ps-tip";
+function tipText() {
+  return lastState.active ? `Parar transmiss\xE3o P2P \u2014 ${lastState.viewers} assistindo` : "Transmitir tela via P2P";
+}
+function patchTooltips() {
+  if (nativeMode !== "p2p") return;
+  const text = tipText();
+  for (const btn of document.querySelectorAll(`[${UNAVAIL_ATTR}]`)) {
+    const id = btn.getAttribute("aria-describedby");
+    if (!id) continue;
+    const quoted = id.replace(/["\\]/g, "\\$&");
+    const sel = `[role="tooltip"][id="${quoted}"] [data-text-variant]`;
+    for (const el of document.querySelectorAll(sel)) {
+      if (el.getAttribute(TIP_ATTR) !== text) el.setAttribute(TIP_ATTR, text);
+    }
+  }
+}
+function paintUnavailable(btn) {
+  const blocked = nativeMode === "p2p" && isBlockedIcon(nativePathsOf(btn));
+  const ours = btn.querySelector("svg.p2ps-icon");
+  if (!blocked) {
+    btn.removeAttribute(UNAVAIL_ATTR);
+    ours?.remove();
+    return;
+  }
+  if (!btn.hasAttribute(UNAVAIL_ATTR)) btn.setAttribute(UNAVAIL_ATTR, "");
+  if (ours) return;
+  const native = btn.querySelector("svg:not(.p2ps-icon)");
+  if (!native?.parentElement) return;
+  const tpl = document.createElement("template");
+  tpl.innerHTML = SCREENSHARE_SVG;
+  const icon = tpl.content.firstElementChild;
+  icon.setAttribute("class", `${native.getAttribute("class") ?? ""} p2ps-icon`.trim());
+  icon.setAttribute("width", native.getAttribute("width") ?? "24");
+  icon.setAttribute("height", native.getAttribute("height") ?? "24");
+  icon.setAttribute("aria-hidden", "true");
+  native.parentElement.appendChild(icon);
+}
 function paintOne(btn) {
-  const svg = btn.querySelector("svg");
   const ours = nativeMode === "p2p" && lastState.active;
-  if (svg) svg.style.color = ours ? "var(--status-danger, #ed4245)" : "";
+  paintUnavailable(btn);
+  for (const svg of btn.querySelectorAll("svg")) {
+    svg.style.color = ours ? "var(--status-danger, #ed4245)" : "";
+  }
   if (ours) {
     if (!btn.hasAttribute(LABEL_ATTR)) {
       btn.setAttribute(LABEL_ATTR, btn.getAttribute("aria-label") ?? "");
@@ -1503,8 +1569,9 @@ function paintOne(btn) {
   }
 }
 function releaseNative(btn) {
-  const svg = btn.querySelector("svg");
-  if (svg) svg.style.color = "";
+  for (const svg of btn.querySelectorAll("svg")) svg.style.color = "";
+  btn.querySelector("svg.p2ps-icon")?.remove();
+  btn.removeAttribute(UNAVAIL_ATTR);
   if (btn.hasAttribute(LABEL_ATTR)) {
     btn.setAttribute("aria-label", btn.getAttribute(LABEL_ATTR) ?? "");
     btn.removeAttribute(LABEL_ATTR);
@@ -1521,7 +1588,7 @@ function onNativeClick(e) {
     bypass: bypassClick,
     shiftKey: e.shiftKey,
     p2pActive: lastState.active,
-    nativeLabel: nativeLabelOf(btn)
+    nativeOffersShare: offersShare(nativeLabelOf(btn), nativePathsOf(btn))
   });
   if (!take) return;
   e.preventDefault();
@@ -1582,7 +1649,14 @@ function mountVoiceButton(opts) {
     requestAnimationFrame(run);
     fallback = setTimeout(run, 250);
   };
-  voiceObserver = new MutationObserver(schedule);
+  voiceObserver = new MutationObserver(() => {
+    schedule();
+    try {
+      patchTooltips();
+    } catch (err) {
+      console.warn("[P2PShare] tooltip do bot\xE3o nativo", err);
+    }
+  });
   voiceObserver.observe(document.body, { childList: true, subtree: true });
   const heartbeat = setInterval(sync, 1e3);
   return () => {

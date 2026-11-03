@@ -8,7 +8,14 @@ import { formatMbps } from "../../bitrate";
 import type { CaptureChoice, CaptureSource } from "../../capture";
 import { isImpostor } from "./api";
 import { helperReady } from "./audioHelper";
-import { type NativeButtonMode, isShareScreenLabel, shouldIntercept } from "../../golive";
+import {
+    type NativeButtonMode,
+    SHARE_ARROW_PATH,
+    isBlockedIcon,
+    isShareScreenLabel,
+    offersShare,
+    shouldIntercept
+} from "../../golive";
 
 declare const BdApi: any;
 
@@ -216,6 +223,15 @@ const CSS = `
 /* Botao nativo do Discord assumido pelo P2PShare. Marcado por atributo, nao
    por classe: o React reescreve o className a cada mudanca de estado. */
 [data-p2ps-native] { position: relative; }
+/* Botao "indisponivel" assumido: some o icone de bloqueio, fica o nosso. */
+[data-p2ps-unavail] svg:not(.p2ps-icon) { display: none !important; }
+/* Tooltip do Discord com o nosso texto: o original (do React) fica oculto. */
+[data-p2ps-tip] { font-size: 0 !important; }
+[data-p2ps-tip]::after {
+    content: attr(data-p2ps-tip);
+    font-size: 14px;
+    line-height: 18px;
+}
 .p2ps-voice-count {
     position: absolute;
     bottom: 0;
@@ -583,7 +599,11 @@ function findNativeButtons(): HTMLElement[] {
         found.add(btn);
     }
 
-    for (const path of document.querySelectorAll('button svg path[d^="M2 4.5C2 3.397"]')) {
+    // Pelo icone: no painel de voz o botao nao tem aria-label (o texto so'
+    // existe no tooltip, montado no hover).
+    const byIcon = `button svg path[d^="M2 4.5C2 3.397"], button svg path[d*="${SHARE_ARROW_PATH}"]`;
+    for (const path of document.querySelectorAll(byIcon)) {
+        if (path.closest(".p2ps-icon")) continue;
         const btn = path.closest("button");
         if (btn && !isOurs(btn)) found.add(btn as HTMLElement);
     }
@@ -600,12 +620,91 @@ function findNativeButtons(): HTMLElement[] {
     return [...found];
 }
 
+/** Os `d` dos paths do icone do Discord (sem o icone que nos pomos por cima). */
+function nativePathsOf(btn: HTMLElement): string[] {
+    return [...btn.querySelectorAll("svg:not(.p2ps-icon) path")]
+        .map(p => p.getAttribute("d") ?? "");
+}
+
+const UNAVAIL_ATTR = "data-p2ps-unavail";
+const TIP_ATTR = "data-p2ps-tip";
+
+/** Texto do tooltip do botao assumido. */
+function tipText(): string {
+    return lastState.active
+        ? `Parar transmissão P2P — ${lastState.viewers} assistindo`
+        : "Transmitir tela via P2P";
+}
+
+/**
+ * Troca o texto do tooltip do Discord nos botoes "indisponiveis".
+ *
+ * O tooltip nasce no hover, numa camada propria, com o mesmo id do
+ * `aria-describedby` do botao. O Discord o abre por `mouseenter` direto no
+ * elemento, entao nao da' para impedir de fora; e o texto e' do React, entao
+ * nao mexemos nele: o atributo esconde o original e o CSS mostra o nosso.
+ *
+ * Roda dentro do callback do MutationObserver (microtarefa, antes da
+ * pintura): o texto do Discord nao chega a aparecer nem por um quadro.
+ */
+function patchTooltips(): void {
+    if (nativeMode !== "p2p") return;
+    const text = tipText();
+
+    for (const btn of document.querySelectorAll<HTMLElement>(`[${UNAVAIL_ATTR}]`)) {
+        const id = btn.getAttribute("aria-describedby");
+        if (!id) continue;
+
+        // Sem CSS.escape: no contexto em que o plugin roda ele nao existe.
+        const quoted = id.replace(/["\\]/g, "\\$&");
+        const sel = `[role="tooltip"][id="${quoted}"] [data-text-variant]`;
+        for (const el of document.querySelectorAll<HTMLElement>(sel)) {
+            if (el.getAttribute(TIP_ATTR) !== text) el.setAttribute(TIP_ATTR, text);
+        }
+    }
+}
+
+/**
+ * Sem permissao de video no canal, o Discord desenha o botao com um selo de
+ * bloqueio e o tooltip "Compartilhamento de tela indisponivel" — mas o botao
+ * continua clicavel. O P2P nao depende dessa permissao: trocamos o icone
+ * pelo nosso e o texto do tooltip pelo nosso (ver `patchTooltips`).
+ */
+function paintUnavailable(btn: HTMLElement): void {
+    const blocked = nativeMode === "p2p" && isBlockedIcon(nativePathsOf(btn));
+    const ours = btn.querySelector<SVGElement>("svg.p2ps-icon");
+
+    if (!blocked) {
+        btn.removeAttribute(UNAVAIL_ATTR);
+        ours?.remove();
+        return;
+    }
+
+    if (!btn.hasAttribute(UNAVAIL_ATTR)) btn.setAttribute(UNAVAIL_ATTR, "");
+    if (ours) return;
+
+    const native = btn.querySelector<SVGElement>("svg:not(.p2ps-icon)");
+    if (!native?.parentElement) return;
+
+    const tpl = document.createElement("template");
+    tpl.innerHTML = SCREENSHARE_SVG;
+    const icon = tpl.content.firstElementChild as SVGElement;
+    // Mesma classe e tamanho do icone nativo: nasce com o visual do Discord.
+    icon.setAttribute("class", `${native.getAttribute("class") ?? ""} p2ps-icon`.trim());
+    icon.setAttribute("width", native.getAttribute("width") ?? "24");
+    icon.setAttribute("height", native.getAttribute("height") ?? "24");
+    icon.setAttribute("aria-hidden", "true");
+    native.parentElement.appendChild(icon);
+}
+
 /** Pinta o estado do P2P no botao nativo: icone vermelho, rotulo e contador. */
 function paintOne(btn: HTMLElement): void {
-    const svg = btn.querySelector("svg") as SVGElement | null;
     const ours = nativeMode === "p2p" && lastState.active;
 
-    if (svg) svg.style.color = ours ? "var(--status-danger, #ed4245)" : "";
+    paintUnavailable(btn);
+    for (const svg of btn.querySelectorAll<SVGElement>("svg")) {
+        svg.style.color = ours ? "var(--status-danger, #ed4245)" : "";
+    }
 
     if (ours) {
         if (!btn.hasAttribute(LABEL_ATTR)) {
@@ -636,8 +735,9 @@ function paintOne(btn: HTMLElement): void {
 
 /** Devolve o botao ao Discord exatamente como estava. */
 function releaseNative(btn: HTMLElement): void {
-    const svg = btn.querySelector("svg") as SVGElement | null;
-    if (svg) svg.style.color = "";
+    for (const svg of btn.querySelectorAll<SVGElement>("svg")) svg.style.color = "";
+    btn.querySelector("svg.p2ps-icon")?.remove();
+    btn.removeAttribute(UNAVAIL_ATTR);
     if (btn.hasAttribute(LABEL_ATTR)) {
         btn.setAttribute("aria-label", btn.getAttribute(LABEL_ATTR) ?? "");
         btn.removeAttribute(LABEL_ATTR);
@@ -662,7 +762,7 @@ function onNativeClick(e: MouseEvent): void {
         bypass: bypassClick,
         shiftKey: e.shiftKey,
         p2pActive: lastState.active,
-        nativeLabel: nativeLabelOf(btn)
+        nativeOffersShare: offersShare(nativeLabelOf(btn), nativePathsOf(btn))
     });
     if (!take) return;
 
@@ -679,7 +779,8 @@ export function setNativeButtonMode(mode: NativeButtonMode): void {
 
 /** Ha' um botao nativo de compartilhar tela visivel agora? */
 export function hasNativeGoLive(): boolean {
-    return findNativeButtons().some(isVisible);
+    // "Indisponivel" (sem permissao de video) nao abre Go Live nenhum.
+    return findNativeButtons().some(b => isVisible(b) && !isBlockedIcon(nativePathsOf(b)));
 }
 
 /**
@@ -709,7 +810,6 @@ export function mountVoiceButton(opts: {
     onNativeToggle = opts.onToggle;
     nativeMode = opts.mode;
     window.addEventListener("click", onNativeClick, true);
-
     const sync = () => {
         for (const btn of voiceBtns) {
             if (!btn.isConnected) voiceBtns.delete(btn);
@@ -762,7 +862,16 @@ export function mountVoiceButton(opts: {
         fallback = setTimeout(run, 250);
     };
 
-    voiceObserver = new MutationObserver(schedule);
+    voiceObserver = new MutationObserver(() => {
+        schedule();
+        // Fora do quadro agendado: o tooltip tem de sair ja' com o nosso texto.
+        // Um erro aqui nao pode derrubar o sync de cada mutacao.
+        try {
+            patchTooltips();
+        } catch (err) {
+            console.warn("[P2PShare] tooltip do botão nativo", err);
+        }
+    });
     voiceObserver.observe(document.body, { childList: true, subtree: true });
 
     // Nem toda transicao passa pelo DOM que observamos. Fechar a janela da
@@ -780,8 +889,7 @@ export function mountVoiceButton(opts: {
 
         voiceObserver?.disconnect();
         voiceObserver = null;
-        window.removeEventListener("click", onNativeClick, true);
-        onNativeToggle = null;
+        window.removeEventListener("click", onNativeClick, true);        onNativeToggle = null;
         for (const btn of voiceBtns) releaseNative(btn);
         voiceBtns.clear();
         // O selo da barra lateral nao vive num mapa nosso: sem isto ele ficaria
