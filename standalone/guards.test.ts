@@ -47,6 +47,8 @@ test("isAppVersionDir", () => {
     assert.ok(!isAppVersionDir("app"));
     assert.ok(!isAppVersionDir("packages"));
     assert.ok(!isAppVersionDir("app-1.0.9266.bak"));
+    // Pasta temporaria do atualizador do Discord enquanto instala: nao e' alvo.
+    assert.ok(!isAppVersionDir(".app-1.0.9267.installing"));
 });
 
 test("isDiscordHost", () => {

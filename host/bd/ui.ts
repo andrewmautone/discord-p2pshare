@@ -1001,7 +1001,8 @@ function applyLiveBadges(): void {
         const text = nameEl?.textContent?.trim();
 
         const avatar = row.querySelector<HTMLElement>('[class*="userAvatar"]');
-        const id = (avatar?.style.backgroundImage || "").match(/avatars\/(\d+)\//)?.[1];
+        const id = (avatar?.style.backgroundImage || "").match(/avatars\/(\d+)\//)?.[1]
+            ?? reactUserId(row);
 
         const live = liveUsers.some(u =>
             (id && u.id === id) || (!!text && u.names.includes(text)));
@@ -1101,7 +1102,10 @@ const CHANNEL_ITEM = `[data-list-item-id^="${CHANNEL_ITEM_PREFIX}"]`;
 const SIDEBAR_SCOPE = 'nav, [class*="sidebar"], [class*="channelList"], [class*="privateChannels"]';
 
 function channelIdOf(el: Element): string | null {
-    const raw = el.closest(CHANNEL_ITEM)?.getAttribute("data-list-item-id") ?? "";
+    // Discord 1.0.9267: a lista de conectados e' irma do item do canal, dentro
+    // do mesmo <li> (li > [item do canal] + [div.list role=group > voiceUser]).
+    const item = el.closest(CHANNEL_ITEM) ?? el.closest("li")?.querySelector(CHANNEL_ITEM);
+    const raw = item?.getAttribute("data-list-item-id") ?? "";
     return raw.slice(CHANNEL_ITEM_PREFIX.length) || null;
 }
 
@@ -1117,6 +1121,18 @@ function climbToRow(el: HTMLElement, scope: HTMLElement): HTMLElement {
 }
 
 const SIDEBAR_STRATEGIES: SidebarStrategy[] = [
+    {
+        // Estrutura atual (1.0.9267): os conectados ficam num grupo irmao do
+        // item do canal, no mesmo <li>. Medido ao vivo no Discord do Andrew.
+        name: "channel-li-voiceuser",
+        rows: () => [...document.querySelectorAll<HTMLElement>(CHANNEL_ITEM)]
+            .flatMap(item => {
+                const li = item.closest("li");
+                if (!li) return [];
+                return [...li.querySelectorAll<HTMLElement>('[class*="voiceUser"]')]
+                    .map(el => ({ el, channelId: channelIdOf(item) }));
+            })
+    },
     {
         // O caso esperado: o Discord pendura os conectados dentro do proprio
         // item do canal, com a mesma classe de linha usada na chamada.
@@ -1173,6 +1189,24 @@ function dedupeRows(rows: SidebarRow[]): SidebarRow[] {
  * as duas formas trazem o id na URL. Quem usa avatar padrao nao tem id em
  * lugar nenhum — por isso o nome continua como reserva.
  */
+/**
+ * Id do usuario pelas props do React da linha. Funciona tambem para quem usa
+ * avatar padrao (sem id na URL), onde so' restaria comparar nomes — e a lista
+ * mostra o apelido no servidor, que o plugin nem sempre conhece.
+ */
+function reactUserId(row: HTMLElement): string | null {
+    try {
+        const key = Object.keys(row).find(k => k.startsWith("__reactFiber$"));
+        let fiber = key ? (row as any)[key] : null;
+        for (let i = 0; fiber && i < 15; i++, fiber = fiber.return) {
+            const p = fiber.memoizedProps;
+            const id = p?.user?.id ?? p?.voiceState?.userId ?? p?.userId;
+            if (typeof id === "string" && /^\d+$/.test(id)) return id;
+        }
+    } catch { /* estrutura interna mudou: cai no avatar e no nome */ }
+    return null;
+}
+
 function avatarUserId(row: HTMLElement): string | null {
     for (const img of row.querySelectorAll<HTMLImageElement>("img[src]")) {
         const id = img.getAttribute("src")?.match(/avatars\/(\d+)\//)?.[1];
@@ -1200,7 +1234,7 @@ function nameTextsOf(row: HTMLElement): string[] {
 }
 
 function liveUserOf(row: HTMLElement): LiveUser | undefined {
-    const id = avatarUserId(row);
+    const id = avatarUserId(row) ?? reactUserId(row);
     if (id) {
         const byId = liveUsers.find(u => u.id === id);
         if (byId) return byId;

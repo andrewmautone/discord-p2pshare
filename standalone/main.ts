@@ -117,10 +117,19 @@ function watchUpdates(resources: string): void {
     // Na abertura: pega versao que o Discord baixou na sessao anterior.
     setTimeout(run, 15_000);
 
-    // No fim: o reinicio de atualizacao passa por aqui, com a versao nova ja
-    // extraida. Nao usamos fs.watch de proposito: ele dispararia com o
-    // app.asar novo ainda pela metade.
+    // Durante a sessao: o atualizador do Discord instala a versao nova em
+    // segundo plano (.app-x.installing -> app-x) e depois reinicia sem passar
+    // por before-quit. Visto na 1.0.9267: a pasta nova apareceu uma hora
+    // depois da abertura e o reinicio a abriu sem gancho. Conferir a cada
+    // poucos minutos custa um readdir. Nao usamos fs.watch de proposito: ele
+    // dispararia com o app.asar novo ainda pela metade (a pasta .installing
+    // so vira app-x quando termina, e isAppVersionDir ignora a temporaria).
+    const timer = setInterval(run, 3 * 60_000);
+    timer.unref?.();
+
+    // No fim, quando o Discord fecha pelo caminho normal.
     electron.app.on("before-quit", run);
+    electron.app.on("will-quit", run);
 }
 
 /**

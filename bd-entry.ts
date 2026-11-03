@@ -20,6 +20,7 @@ import {
     getCurrentUserId,
     hasCurrentUser,
     getCurrentUsername,
+    getMemberNick,
     getUsername,
     onVoiceChannelChange
 } from "./host/bd/api";
@@ -63,6 +64,7 @@ export default class P2PShare {
     private cleanupVoiceBtn: (() => void) | null = null;
     private cleanupBeacons: (() => void) | null = null;
     private cleanupVoice: (() => void) | null = null;
+    private cleanupBeaconSound: (() => void) | null = null;
 
     /** Relógio de espera pelo login; parar o plugin antes disso o cancela. */
     private readyTimer: ReturnType<typeof setInterval> | null = null;
@@ -143,7 +145,13 @@ export default class P2PShare {
             for (const b of getActiveBeacons()) {
                 users.push({
                     id: b.broadcasterId,
-                    names: [getUsername(b.broadcasterId), b.broadcasterName],
+                    // A lista mostra o apelido no servidor; o id resolve quase
+                    // sempre, o nome fica de reserva para quando não resolve.
+                    names: [
+                        getUsername(b.broadcasterId),
+                        b.broadcasterName,
+                        ...[getMemberNick(b.broadcasterId, b.channelId)].filter((n): n is string => !!n)
+                    ],
                     // Já assistindo: o selo vira informativo, sem ação repetida.
                     onWatch: isWatching(b.sessionId)
                         ? undefined
@@ -162,10 +170,37 @@ export default class P2PShare {
 
         this.cleanupBeacons = onBeaconsChange(refreshLive);
 
-        // O selo é silencioso de propósito: sem som e sem notificação para o
-        // aviso de outra pessoa. Trocar de chamada muda o que dá para assistir
-        // (o selo só abre o vídeo de dentro da mesma sala), então repinta.
-        this.cleanupVoice = onVoiceChannelChange(() => refreshLive());
+        // Som só para transmissão da chamada em que estou (como o Discord faz
+        // no Go Live); o selo das outras salas do servidor é silencioso.
+        // Entrar numa sala que já está transmitindo não toca: o som marca o
+        // começo, não o momento em que eu reparo nela.
+        const announced = new Set<string>();
+        let primed = false;
+        const syncSounds = () => {
+            const here = new Set(getActiveBeacons().filter(beaconIsHere).map(b => b.sessionId));
+            for (const sessionId of here) {
+                if (announced.has(sessionId)) continue;
+                announced.add(sessionId);
+                if (primed) playStreamStarted();
+            }
+            for (const sessionId of [...announced]) {
+                if (here.has(sessionId)) continue;
+                announced.delete(sessionId);
+                if (primed) playStreamStopped();
+            }
+            primed = true;
+        };
+        this.cleanupBeaconSound = onBeaconsChange(syncSounds);
+        syncSounds(); // marca o que já está no ar ao iniciar, sem tocar
+
+        // Trocar de chamada muda o que dá para assistir (o selo só abre o
+        // vídeo de dentro da mesma sala), então repinta — e reconta os sons
+        // sem tocar: o que já estava no ar na sala nova não é novidade.
+        this.cleanupVoice = onVoiceChannelChange(() => {
+            primed = false;
+            syncSounds();
+            refreshLive();
+        });
 
         // Só o transmissor ouve alguém entrando — é ele que precisa saber.
         let { viewers, active } = getBroadcastState();
@@ -222,6 +257,9 @@ export default class P2PShare {
 
         this.cleanupVoice?.();
         this.cleanupVoice = null;
+
+        this.cleanupBeaconSound?.();
+        this.cleanupBeaconSound = null;
 
         this.cleanupVoiceBtn?.();
         this.cleanupVoiceBtn = null;

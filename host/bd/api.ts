@@ -574,3 +574,19 @@ export function openRelaySocket(url: string): RelaySocket {
     ws.onerror = () => { /* onclose vem em seguida */ };
     return socket;
 }
+
+const GuildMemberStore = findOptional(byStoreName("GuildMemberStore"));
+
+/**
+ * Apelido da pessoa no servidor do canal, se tiver. A lista lateral mostra o
+ * apelido, nao o nome global — sem ele o selo so' acha a linha pelo id.
+ */
+export function getMemberNick(userId: string, channelId: string): string | null {
+    try {
+        const guildId = getChannelGuildId(channelId);
+        if (!guildId) return null;
+        return GuildMemberStore()?.getNick?.(guildId, userId) ?? null;
+    } catch {
+        return null;
+    }
+}
