@@ -4,9 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -96,34 +94,6 @@ for (const name of ["LEIA-ME.txt"]) {
     }
 }
 
-// Compila o instalador do Windows, se o Inno Setup estiver na máquina.
-// É opcional de propósito: o .plugin.js sozinho já instala arrastando, então
-// quem só quer o plugin não precisa de toolchain nenhuma.
-const ISCC_CANDIDATES = [
-    `${process.env.LOCALAPPDATA}\\Programs\\Inno Setup 6\\ISCC.exe`,
-    "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe",
-    "C:\\Program Files\\Inno Setup 6\\ISCC.exe"
-];
-
-const iscc = ISCC_CANDIDATES.find(p => p && existsSync(p));
-
-if (!iscc) {
-    console.log("\nInno Setup não encontrado — pulando o instalador .exe.");
-    console.log("Para gerá-lo: winget install JRSoftware.InnoSetup");
-} else {
-    console.log("\nCompilando o instalador do Windows...");
-    const res = spawnSync(iscc, [
-        `/DAppVersion=${pkgVersion}`,
-        resolve(root, "scripts", "installer.iss")
-    ], { encoding: "utf8" });
-
-    if (res.status !== 0) {
-        console.error(res.stdout || "");
-        console.error(res.stderr || "");
-        throw new Error("falha ao compilar o instalador");
-    }
-
-    console.log("Instalador pronto: release/P2PShare-Setup.exe");
-}
-
-console.log(`\nPronto: ${outDir}`);
+// Carregador próprio e instalador do Windows: mesmo passo que roda sozinho em
+// `node scripts/build-standalone.mjs`, sem recompilar o plugin.
+await import("./build-standalone.mjs");
