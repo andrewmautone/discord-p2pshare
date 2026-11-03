@@ -19,7 +19,7 @@ import { fileLog } from "./filelog";
 import { allowedUrl, insideRoot, isDiscordHost, isMainDiscordPage } from "./guards";
 
 const electron = require("electron") as typeof import("electron");
-const { contextBridge, webFrame, shell } = electron;
+const { contextBridge, webFrame, shell, ipcRenderer } = electron;
 
 const ROOT = path.join(process.env.APPDATA || "", "P2PShare");
 const CORE = path.join(ROOT, "core");
@@ -173,6 +173,29 @@ const bridge = {
 
     log(message: string): void {
         fileLog("runtime", String(message).slice(0, 2000));
+    },
+
+    /**
+     * WebSocket para os relays Nostr, aberto no processo principal (a CSP da
+     * página bloqueia). O processo principal só aceita os relays da lista.
+     */
+    relay: {
+        open(url: string): Promise<number> {
+            return ipcRenderer.invoke("p2pshare:relay-open", String(url));
+        },
+        send(id: number, data: string): void {
+            ipcRenderer.send("p2pshare:relay-send", Number(id), String(data));
+        },
+        close(id: number): void {
+            ipcRenderer.send("p2pshare:relay-close", Number(id));
+        },
+        onEvent(cb: (id: number, type: string, data?: string) => void): void {
+            ipcRenderer.on("p2pshare:relay-event", (_e, id: number, type: string, data?: string) => {
+                try {
+                    cb(id, type, data);
+                } catch { /* erro do plugin não derruba a ponte */ }
+            });
+        }
     }
 };
 

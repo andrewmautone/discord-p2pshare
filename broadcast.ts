@@ -8,18 +8,15 @@ import { CaptureError, captureScreen } from "./capture";
 import { newSessionId } from "./codec";
 import { host } from "./host";
 import { BroadcastPeers, type BroadcastQuality, type PeerTransport } from "./peers";
-import { broadcastActivity, canAnnounceByStatus } from "./presence";
-import { observeSignals, postBeacon, removeBeacon, sendHandshake } from "./signaling";
+import { announceLive, observeSignals, sendHandshake } from "./signaling";
 
 interface Session {
     sessionId: string;
     /** Encerra o auxiliar de áudio, quando houver. */
     stopAudio?: () => void;
     channelId: string;
-    /** Mensagem de aviso no chat; ausente quando o status bastou. */
-    beaconId?: string;
-    /** O aviso está no status do Discord e precisa ser retirado no fim. */
-    viaStatus: boolean;
+    /** Para de renovar o aviso nos relays e avisa o fim. */
+    stopAnnounce: () => void;
     stream: MediaStream;
     peers: BroadcastPeers;
     unsubscribe: () => void;
@@ -206,7 +203,7 @@ export async function startBroadcast(): Promise<void> {
 
     // Sair da voz, trocar de canal ou fechar o Discord tem que cortar na hora:
     // uma transmissão viva sem ninguém do outro lado é banda gasta à toa, e o
-    // aviso ficaria no chat convidando gente para uma tela que não existe mais.
+    // aviso continuaria convidando gente para uma tela que não existe mais.
     const onVoiceChange = host.onVoiceChannelChange(id => {
         if (id !== channelId) void stopBroadcast();
     });
@@ -215,7 +212,7 @@ export async function startBroadcast(): Promise<void> {
         // beforeunload não espera promessa: fechar os peers é o que dá para
         // garantir, e é o que corta o vídeo de quem assiste na hora.
         session?.peers.closeAll();
-        if (session?.viaStatus) host.setBroadcastActivity(null);
+        session?.stopAnnounce();
         void stopBroadcast();
     };
     window.addEventListener("beforeunload", onUnload);
@@ -229,40 +226,22 @@ export async function startBroadcast(): Promise<void> {
         onHandshake: event => {
             if (event.sessionId !== sessionId || event.kind !== "offer") return;
 
+            // O relay é público: só atende quem está de fato nesta chamada.
+            if (!host.isUserInVoiceChannel(event.fromUserId, channelId)) {
+                console.warn("[P2PShare] offer de quem não está na chamada, ignorado", event.fromUserId);
+                return;
+            }
+
             peers.handleOffer(event.fromUserId, event.sdp)
                 .catch(err => console.error("[P2PShare] falha ao responder offer", err));
         }
     });
 
-    // Aviso principal: o status do Discord. Não suja o chat e some sozinho
-    // se o Discord fechar. A mensagem no canal fica de reserva para quando o
-    // status não chega a ninguém (compartilhar atividade desligado) ou quando
-    // o usuário pediu as duas coisas.
-    const viaStatus = canAnnounceByStatus()
-        && host.isActivitySharingEnabled() !== false
-        && host.setBroadcastActivity(broadcastActivity(sessionId, channelId, Date.now()));
-    console.info(`[P2PShare] aviso pelo status: ${viaStatus ? "sim" : "não"}`);
-
-    let beaconId: string | undefined;
-    if (!viaStatus || host.alwaysAnnounceInChat()) {
-        try {
-            beaconId = await postBeacon(channelId, sessionId, host.getCurrentUsername());
-        } catch (err) {
-            if (!viaStatus) {
-                // Sem status e sem mensagem ninguém descobre a transmissão: desfaz tudo.
-                unwatchExit();
-                unsubscribe();
-                stream.getTracks().forEach(track => track.stop());
-                audio.stop?.();
-                host.toast(`não deu para anunciar a transmissão: ${(err as Error).message}`, "error");
-                return;
-            }
-            console.warn("[P2PShare] mensagem de reserva falhou; segue só pelo status", err);
-        }
-    }
+    // Aviso pelos relays Nostr, renovado sozinho; some se parar de renovar.
+    const stopAnnounce = announceLive(channelId, sessionId);
 
     session = {
-        sessionId, channelId, beaconId, viaStatus, stream, peers, unsubscribe, unwatchExit,
+        sessionId, channelId, stopAnnounce, stream, peers, unsubscribe, unwatchExit,
         stopAudio: audio.stop ?? undefined
     };
     // Reaplica a escolha anterior: quem baixou para 720p não quer voltar
@@ -302,15 +281,7 @@ export async function stopBroadcast(): Promise<void> {
     current.stream.getTracks().forEach(track => track.stop());
     current.stopAudio?.();
 
-    if (current.viaStatus) host.setBroadcastActivity(null);
-
-    if (current.beaconId) {
-        try {
-            await removeBeacon(current.channelId, current.beaconId);
-        } catch (err) {
-            console.warn("[P2PShare] não deu para apagar o beacon", err);
-        }
-    }
+    current.stopAnnounce();
 
     notify();
     host.toast("Transmissão encerrada", "info");

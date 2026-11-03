@@ -19,7 +19,7 @@ import {
     uploadTextAttachment
 } from "../discord/api";
 import { onMessageCreate, onMessageDelete, onVoiceChannelChange } from "../discord/events";
-import { getVoiceChannelMembers, onPresenceChange, setBroadcastActivity } from "../discord/presence";
+import * as relays from "../discord/relays";
 import { settings } from "../settings";
 import { openSourcePicker } from "../ui/SourcePicker";
 import { mountOverlay, setOverlayViewers, unmountAllOverlays, unmountOverlay } from "../ui/ViewerOverlay";
@@ -48,11 +48,12 @@ export const host: Host = {
     onMessageDelete,
     onVoiceChannelChange,
 
-    setBroadcastActivity,
-    isActivitySharingEnabled: () => null,
-    getVoiceChannelMembers,
-    onPresenceChange,
-    alwaysAnnounceInChat: () => settings.store.announceInChat,
+    openRelaySocket: relays.openRelaySocket,
+    getSelectedGuildId: relays.getSelectedGuildId,
+    getChannelGuildId: relays.getChannelGuildId,
+    getGuildVoiceChannelIds: relays.getGuildVoiceChannelIds,
+    isUserInVoiceChannel: relays.isUserInVoiceChannel,
+    onNavigationChange: relays.onNavigationChange,
 
     toast: (message, kind) => showToast(message, TOAST_TYPE[kind]),
     getBudgetMbps: () => settings.store.uploadBudgetMbps,
@@ -69,9 +70,6 @@ export const host: Host = {
 
     // O painel de voz do Vencord ainda não tem selo: o alvo hoje é o
     // BetterDiscord, e um no-op mantém a interface honesta.
-    setLiveUsers: () => { },
-
-    // O botão "Assistir" é renderizado direto na mensagem pelo accessory.
-    announceBeacon: () => { },
-    revokeBeacon: () => { }
+    // Sem selo na lista no Vencord por enquanto: a interface de selos é do BD.
+    setLiveUsers: () => { }
 };

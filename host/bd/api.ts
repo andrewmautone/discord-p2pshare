@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import type { RelaySocket } from "../../nostr/pool";
 import type { HostMessage } from "../types";
 
 declare const BdApi: any;
@@ -410,111 +411,166 @@ export function onMessageDelete(
     return () => FluxDispatcher().unsubscribe("MESSAGE_DELETE", listener);
 }
 
-// --- aviso pelo status ("Jogando P2PShare") ---
+// --- descoberta pelos relays: canais do servidor e quem está em cada um ---
 
 /** Store pelo nome que o próprio Discord dá a ele — o filtro mais estável. */
 function byStoreName(name: string): Filter {
     return m => typeof m?.getName === "function" && m.getName() === name;
 }
 
+const SelectedGuildStore = findOptional(byStoreName("SelectedGuildStore"));
+const GuildChannelStore = findOptional(byStoreName("GuildChannelStore"));
+const ChannelStore = findOptional(byStoreName("ChannelStore"));
 const VoiceStateStore = findOptional(byStoreName("VoiceStateStore"));
 
-const PresenceStore = findOptional(byStoreName("PresenceStore"));
-
-/** Guarda "Compartilhar minha atividade" em settings.status.showCurrentGame. */
-const UserSettingsProtoStore = findOptional(byStoreName("UserSettingsProtoStore"));
-
-/** Identifica a nossa atividade entre as outras que o Discord mantém localmente. */
-const ACTIVITY_SOCKET = "P2PShare";
-
-/**
- * Publica (ou retira, com null) a atividade de transmissão.
- *
- * Mesmo caminho que o Discord usa para atividades locais (RPC de jogos): o
- * cliente junta tudo e manda no presence do gateway. Devolve false se o
- * despacho falhou — aí quem chama recorre à mensagem no chat.
- */
-export function setBroadcastActivity(activity: object | null): boolean {
+/** Servidor aberto na tela, ou null (DMs, amigos). */
+export function getSelectedGuildId(): string | null {
     try {
-        FluxDispatcher().dispatch({
-            type: "LOCAL_ACTIVITY_UPDATE",
-            activity,
-            socketId: ACTIVITY_SOCKET
-        });
-        return true;
-    } catch (err) {
-        console.warn("[P2PShare] não deu para publicar o status", err);
-        return false;
-    }
-}
-
-/** null quando a configuração não foi encontrada (não dá para afirmar nada). */
-export function isActivitySharingEnabled(): boolean | null {
-    try {
-        const value = UserSettingsProtoStore()?.settings?.status?.showCurrentGame?.value;
-        return typeof value === "boolean" ? value : null;
+        return SelectedGuildStore()?.getGuildId?.() ?? null;
     } catch {
         return null;
     }
 }
 
-/** Membros do canal de voz, com as atividades que o Discord conhece de cada um. */
-export function getVoiceChannelMembers(channelId: string): {
-    userId: string;
-    username: string;
-    activities: unknown[];
-}[] {
-    const voice = VoiceStateStore();
-    const presence = PresenceStore();
-    if (!voice || !presence) return [];
-
-    let states: any;
+/** Servidor dono de um canal. */
+export function getChannelGuildId(channelId: string): string | null {
     try {
-        states = voice.getVoiceStatesForChannel(channelId);
+        return ChannelStore()?.getChannel?.(channelId)?.guild_id ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/** Canais de voz de um servidor que eu enxergo. */
+export function getGuildVoiceChannelIds(guildId: string): string[] {
+    try {
+        const groups = GuildChannelStore()?.getChannels?.(guildId);
+        const vocal: any[] = groups?.VOCAL ?? [];
+        return vocal
+            .map(entry => entry?.channel?.id ?? entry?.id)
+            .filter((id: unknown): id is string => typeof id === "string");
     } catch {
         return [];
     }
-
-    const ids = new Set<string>();
-    const list = Array.isArray(states) ? states
-        : states instanceof Map ? [...states.values()]
-            : Object.values(states ?? {});
-
-    for (const s of list as any[]) {
-        const id = s?.userId ?? s?.user_id ?? s?.user?.id;
-        if (typeof id === "string") ids.add(id);
-    }
-    // Store indexado por userId com valor sem o campo: as chaves bastam.
-    if (ids.size === 0 && states && !Array.isArray(states) && !(states instanceof Map)) {
-        for (const key of Object.keys(states)) if (/^\d+$/.test(key)) ids.add(key);
-    }
-
-    return [...ids].map(userId => {
-        let activities: unknown[] = [];
-        try {
-            activities = presence.getActivities(userId) ?? [];
-        } catch { /* sem presence: sem atividades */ }
-
-        return { userId, username: getUsername(userId), activities };
-    });
 }
 
-/**
- * Qualquer mudança que possa acender ou apagar um aviso: presença de alguém,
- * gente entrando ou saindo da voz.
- */
-export function onPresenceChange(handler: () => void): () => void {
-    const events = ["PRESENCE_UPDATES", "PRESENCES_REPLACE", "VOICE_STATE_UPDATES"];
+/** A pessoa está agora neste canal de voz? */
+export function isUserInVoiceChannel(userId: string, channelId: string): boolean {
+    try {
+        const states = VoiceStateStore()?.getVoiceStatesForChannel?.(channelId);
+        if (!states) return false;
+        if (states instanceof Map) return states.has(userId);
+        if (Array.isArray(states)) return states.some((s: any) => (s?.userId ?? s?.user_id) === userId);
+        if (userId in states) return true;
+        return Object.values(states).some((s: any) => (s?.userId ?? s?.user_id) === userId);
+    } catch {
+        return false;
+    }
+}
+
+/** Troca de servidor/canal na tela e mudanças de voz: hora de reavaliar a lista. */
+export function onNavigationChange(handler: () => void): () => void {
+    const events = ["CHANNEL_SELECT", "GUILD_CREATE", "CHANNEL_CREATE", "CHANNEL_DELETE", "VOICE_STATE_UPDATES"];
     const listener = () => {
         try {
             handler();
         } catch (err) {
-            console.error("[P2PShare] handler de presença falhou", err);
+            console.error("[P2PShare] handler de navegação falhou", err);
         }
     };
-
     for (const e of events) FluxDispatcher().subscribe(e, listener);
     return () => {
         for (const e of events) FluxDispatcher().unsubscribe(e, listener);
     };
+}
+
+// --- transporte dos relays ---
+
+interface NativeRelay {
+    open(url: string): Promise<number>;
+    send(id: number, data: string): void;
+    close(id: number): void;
+    onEvent(cb: (id: number, type: string, data?: string) => void): void;
+}
+
+/** Sockets abertos pela ponte nativa, por id, para despachar os eventos. */
+const nativeSockets = new Map<number, RelaySocket>();
+let nativeHooked = false;
+
+function nativeRelay(): NativeRelay | null {
+    const relay: NativeRelay | undefined = (globalThis as any).P2PShareNative?.relay;
+    if (!relay) return null;
+    if (!nativeHooked) {
+        nativeHooked = true;
+        relay.onEvent((id, type, data) => {
+            const s = nativeSockets.get(id);
+            if (!s) return;
+            if (type === "open") s.onopen?.();
+            else if (type === "message") s.onmessage?.(String(data ?? ""));
+            else if (type === "close") {
+                nativeSockets.delete(id);
+                s.onclose?.();
+            }
+        });
+    }
+    return relay;
+}
+
+/**
+ * Socket para um relay.
+ *
+ * A CSP da página do Discord só deixa abrir WebSocket para os domínios dele,
+ * então no carregador standalone a conexão mora no processo principal (ponte
+ * P2PShareNative.relay). Sem a ponte — BetterDiscord, que tira a CSP — usa o
+ * WebSocket da página.
+ */
+export function openRelaySocket(url: string): RelaySocket {
+    const native = nativeRelay();
+    if (native) {
+        let id: number | null = null;
+        let closed = false;
+        const socket: RelaySocket = {
+            onopen: null,
+            onmessage: null,
+            onclose: null,
+            send: data => {
+                if (id !== null) native.send(id, data);
+            },
+            close: () => {
+                closed = true;
+                if (id !== null) {
+                    native.close(id);
+                    nativeSockets.delete(id);
+                }
+            }
+        };
+        native.open(url).then(
+            got => {
+                id = got;
+                if (closed) {
+                    native.close(got);
+                    return;
+                }
+                nativeSockets.set(got, socket);
+            },
+            () => setTimeout(() => socket.onclose?.(), 0)
+        );
+        return socket;
+    }
+
+    const ws = new WebSocket(url);
+    const socket: RelaySocket = {
+        onopen: null,
+        onmessage: null,
+        onclose: null,
+        send: data => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(data);
+        },
+        close: () => ws.close()
+    };
+    ws.onopen = () => socket.onopen?.();
+    ws.onmessage = e => socket.onmessage?.(String(e.data));
+    ws.onclose = () => socket.onclose?.();
+    ws.onerror = () => { /* onclose vem em seguida */ };
+    return socket;
 }

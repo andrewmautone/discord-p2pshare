@@ -4,20 +4,30 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import {
-    type Beacon,
-    beaconContent,
-    handshakeBody,
-    handshakeMarker,
-    parseBeacon,
-    parseHandshakeBody
-} from "./beacon";
-import { formatHandshakeName, type HandshakeKind, parseHandshakeName } from "./codec";
-import { HANDSHAKE_TTL_MS } from "./constants";
-import { deliverHandshake } from "./handshake";
+import type { HandshakeKind } from "./codec";
+import { RELAYS } from "./constants";
+import { Discovery, type LiveBroadcast } from "./discovery";
 import { host } from "./host";
+import { P2PSHARE_KIND } from "./nostr/event";
+import { RelayPool } from "./nostr/pool";
 
-export type { Beacon } from "./beacon";
+/**
+ * Sinalização sem passar pelo Discord: aviso e handshake vão pelos relays
+ * Nostr públicos, na sala do canal de voz. Nada no chat, em DM ou no status.
+ *
+ * Quem está olhando um servidor escuta todos os canais de voz dele — é assim
+ * que o selo de "transmitindo" aparece na lista mesmo para quem está fora da
+ * chamada.
+ */
+
+export interface Beacon {
+    /** Chave única do aviso (o resto do plugin indexa por ela). */
+    messageId: string;
+    channelId: string;
+    sessionId: string;
+    broadcasterId: string;
+    broadcasterName: string;
+}
 
 export interface HandshakeEvent {
     sessionId: string;
@@ -26,104 +36,126 @@ export interface HandshakeEvent {
     sdp: string;
 }
 
-export function postBeacon(channelId: string, sessionId: string, username: string): Promise<string> {
-    return host.sendMessage(channelId, beaconContent(sessionId, username));
-}
+let pool: RelayPool | null = null;
+let discovery: Discovery | null = null;
+let unwatchNav: (() => void) | null = null;
 
-export function removeBeacon(channelId: string, messageId: string): Promise<void> {
-    return host.deleteMessage(channelId, messageId);
+function ensure(): Discovery {
+    if (discovery) return discovery;
+
+    pool = new RelayPool(RELAYS, url => host.openRelaySocket(url), { kind: P2PSHARE_KIND });
+    discovery = new Discovery(pool, {
+        me: () => ({ id: host.getCurrentUserId(), name: host.getCurrentUsername() })
+    });
+
+    unwatchNav = host.onNavigationChange(() => { void refreshWatched(); });
+    void refreshWatched();
+    return discovery;
 }
 
 /**
- * Posta um offer/answer como anexo .txt, roteado pelo nome do arquivo.
- *
- * Vai por DM quando possível: o handshake é entre duas pessoas e nunca
- * precisou ser público. O canal de voz continua como reserva, para quando a
- * DM estiver bloqueada.
+ * Canais cujo aviso interessa: todos os de voz do servidor aberto na tela e
+ * do servidor da chamada em que estou, mais a própria chamada.
  */
-export async function sendHandshake(
+async function refreshWatched(): Promise<void> {
+    if (!discovery) return;
+
+    const ids = new Set<string>();
+    const voice = host.getVoiceChannelId();
+    const guilds = new Set<string>();
+
+    const selected = host.getSelectedGuildId();
+    if (selected) guilds.add(selected);
+    if (voice) {
+        ids.add(voice);
+        const g = host.getChannelGuildId(voice);
+        if (g) guilds.add(g);
+    }
+    for (const g of guilds) for (const id of host.getGuildVoiceChannelIds(g)) ids.add(id);
+
+    await discovery.watch([...ids]);
+}
+
+export function startSignaling(): void {
+    ensure();
+}
+
+export function stopSignaling(): void {
+    unwatchNav?.();
+    unwatchNav = null;
+    discovery?.close();
+    discovery = null;
+    pool?.close();
+    pool = null;
+}
+
+/** Anuncia a transmissão (renovando sozinho). Devolve a função que encerra. */
+export function announceLive(channelId: string, sessionId: string): () => void {
+    return ensure().startLive(channelId, sessionId);
+}
+
+export function sendHandshake(
     channelId: string,
     sessionId: string,
     kind: HandshakeKind,
     targetUserId: string,
     sdp: string
 ): Promise<void> {
-    const via = await deliverHandshake(
-        {
-            openDm: host.openDm,
-            upload: host.uploadTextAttachment
-        },
-        {
-            fallbackChannelId: channelId,
-            targetUserId,
-            filename: formatHandshakeName({ sessionId, kind, targetUserId }),
-            body: handshakeBody(kind, sdp),
-            marker: handshakeMarker(sessionId, kind)
-        }
-    );
+    return ensure().sendSignal(channelId, sessionId, kind, targetUserId, sdp);
+}
 
-    if (via === "channel") {
-        console.info("[P2PShare] handshake foi pelo canal: DM indisponível");
-    }
+function toBeacon(live: LiveBroadcast): Beacon {
+    return {
+        messageId: `nostr:${live.sessionId}`,
+        channelId: live.channelId,
+        sessionId: live.sessionId,
+        broadcasterId: live.userId,
+        broadcasterName: live.name
+    };
 }
 
 /**
- * Observa o chat e traduz mensagens em eventos de sinalização.
- *
- * Handshakes endereçados a mim são baixados; o resto é descartado pelo nome do
- * arquivo, sem custo de rede. Handshakes que eu mesmo mandei somem depois do
- * TTL, para não deixar lixo no canal.
+ * Aviso que vale a pena mostrar: de outra pessoa e de quem está mesmo naquele
+ * canal de voz. Sem a segunda regra, qualquer um que soubesse o id do canal
+ * poderia pendurar um selo falso no nome de alguém.
  */
+function believable(live: LiveBroadcast, myId: string): boolean {
+    return live.userId !== myId && host.isUserInVoiceChannel(live.userId, live.channelId);
+}
+
+/** Traduz os relays em eventos de aviso e de handshake. Devolve a limpeza. */
 export function observeSignals(handlers: {
     onBeacon?: (beacon: Beacon) => void;
-    onBeaconGone?: (channelId: string, messageId: string) => void;
+    onBeaconGone?: (beacon: Beacon) => void;
     onHandshake?: (event: HandshakeEvent) => void;
 }): () => void {
+    const d = ensure();
     const myId = host.getCurrentUserId();
+    let shown = new Map<string, Beacon>();
 
-    const unsubCreate = host.onMessageCreate(message => {
-        const beacon = parseBeacon(message);
-        if (beacon) {
-            handlers.onBeacon?.(beacon);
-            return;
+    const sync = () => {
+        const next = new Map<string, Beacon>();
+        for (const live of d.live()) {
+            if (!believable(live, myId)) continue;
+            const b = toBeacon(live);
+            next.set(b.messageId, b);
         }
+        for (const [key, b] of next) if (!shown.has(key)) handlers.onBeacon?.(b);
+        for (const [key, b] of shown) if (!next.has(key)) handlers.onBeaconGone?.(b);
+        shown = next;
+    };
 
-        for (const attachment of message.attachments ?? []) {
-            const name = parseHandshakeName(attachment.filename);
-            if (!name) continue;
-
-            if (message.author.id === myId) {
-                // É meu: some com ele depois que o outro lado teve tempo de baixar.
-                setTimeout(() => {
-                    host.deleteMessage(message.channel_id, message.id).catch(() => { });
-                }, HANDSHAKE_TTL_MS);
-                continue;
-            }
-
-            if (name.targetUserId !== myId) continue;
-
-            host.fetchAttachmentText(attachment.url)
-                .then(text => {
-                    const body = parseHandshakeBody(text);
-                    if (!body) return;
-
-                    handlers.onHandshake?.({
-                        sessionId: name.sessionId,
-                        kind: name.kind,
-                        fromUserId: message.author.id,
-                        sdp: body.sdp
-                    });
-                })
-                .catch(err => console.warn("[P2PShare] handshake ilegível", err));
-        }
+    const unsubLive = d.onLive(sync);
+    // Quem entra ou sai da voz muda o que é crível sem mudar os avisos.
+    const unsubNav = host.onNavigationChange(() => setTimeout(sync, 0));
+    const unsubSignal = d.onSignal(s => {
+        handlers.onHandshake?.({ sessionId: s.sessionId, kind: s.kind, fromUserId: s.fromUserId, sdp: s.sdp });
     });
-
-    const unsubDelete = host.onMessageDelete((channelId, messageId) => {
-        handlers.onBeaconGone?.(channelId, messageId);
-    });
+    sync();
 
     return () => {
-        unsubCreate();
-        unsubDelete();
+        unsubLive();
+        unsubNav();
+        unsubSignal();
     };
 }

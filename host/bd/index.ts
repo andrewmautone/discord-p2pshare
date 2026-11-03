@@ -37,11 +37,12 @@ export const host: Host = {
     onMessageDelete: api.onMessageDelete,
     onVoiceChannelChange: api.onVoiceChannelChange,
 
-    setBroadcastActivity: api.setBroadcastActivity,
-    isActivitySharingEnabled: api.isActivitySharingEnabled,
-    getVoiceChannelMembers: api.getVoiceChannelMembers,
-    onPresenceChange: api.onPresenceChange,
-    alwaysAnnounceInChat: () => loadSetting("announceInChat", false),
+    openRelaySocket: api.openRelaySocket,
+    getSelectedGuildId: api.getSelectedGuildId,
+    getChannelGuildId: api.getChannelGuildId,
+    getGuildVoiceChannelIds: api.getGuildVoiceChannelIds,
+    isUserInVoiceChannel: api.isUserInVoiceChannel,
+    onNavigationChange: api.onNavigationChange,
 
     toast: (message, kind) => BdApi.UI.showToast(message, { type: TOAST_TYPE[kind] }),
     getBudgetMbps: () => loadSetting("uploadBudgetMbps", DEFAULT_BUDGET_MBPS),
@@ -55,10 +56,7 @@ export const host: Host = {
     unmountAllOverlays: ui.unmountAllOverlays,
     setOverlayViewers: ui.setOverlayViewers,
 
-    setLiveUsers: ui.setLiveUsers,
-
-    announceBeacon: ui.announceBeacon,
-    revokeBeacon: ui.revokeBeacon
+    setLiveUsers: ui.setLiveUsers
 };
 
 export { ui };

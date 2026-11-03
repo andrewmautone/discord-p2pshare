@@ -60,3 +60,21 @@ export function isDiscordHost(hostname: string): boolean {
 export function isMainDiscordPage(pathname: string): boolean {
     return !pathname.startsWith("/popout") && !pathname.startsWith("/overlay");
 }
+
+/**
+ * Relays Nostr que a ponte aceita abrir. Lista fechada: a ponte não vira um
+ * WebSocket genérico para qualquer script que rode na página do Discord.
+ * Tem que bater com RELAYS em constants.ts.
+ */
+export const RELAY_URLS = [
+    "wss://relay.damus.io",
+    "wss://nos.lol",
+    "wss://relay.primal.net",
+    "wss://nostr.mom",
+    "wss://relay.snort.social",
+    "wss://offchain.pub"
+];
+
+export function allowedRelay(url: unknown): url is string {
+    return typeof url === "string" && RELAY_URLS.includes(url);
+}

@@ -107,11 +107,18 @@ export const PEER_CONNECT_TIMEOUT_MS = 30_000;
 export const PEER_DROP_GRACE_MS = 12_000;
 export const HANDSHAKE_TTL_MS = 20_000;
 
+
 /**
- * Aplicação do Discord usada no status "Jogando P2PShare".
- *
- * O Discord descarta atividade local sem application_id. Precisa ser uma
- * aplicação registrada no portal de desenvolvedores; vazio desliga o aviso
- * pelo status e o plugin volta a avisar só pelo chat.
+ * Relays Nostr públicos usados para descobrir transmissões e trocar o
+ * handshake, todos em paralelo: basta um responder. Escolhidos por operadores
+ * diferentes e por repassarem eventos efêmeros (kind 25050), medido com
+ * scripts/relay-probe.ts.
  */
-export const ACTIVITY_APP_ID = "";
+export const RELAYS = [
+    "wss://relay.damus.io",
+    "wss://nos.lol",
+    "wss://relay.primal.net",
+    "wss://nostr.mom",
+    "wss://relay.snort.social",
+    "wss://offchain.pub"
+];

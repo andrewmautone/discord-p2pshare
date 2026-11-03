@@ -6,12 +6,10 @@
 
 import { addChatBarButton, removeChatBarButton } from "@api/ChatButtons";
 import { ApplicationCommandInputType, sendBotMessage } from "@api/Commands";
-import { addMessageAccessory, removeMessageAccessory } from "@api/MessageAccessories";
 import definePlugin from "@utils/types";
 
 import { isBroadcasting, startBroadcast, stopBroadcast } from "./broadcast";
 import { settings } from "./settings";
-import { BeaconAccessory } from "./ui/BeaconAccessory";
 import { P2PShareChatButton, P2PShareIcon } from "./ui/ChatBarToggle";
 import { initWatcher } from "./watch";
 
@@ -42,13 +40,11 @@ export default definePlugin({
 
     start() {
         cleanupWatcher = initWatcher();
-        addMessageAccessory("p2pshare", props => <BeaconAccessory message={props.message} />);
         addChatBarButton("p2pshare", P2PShareChatButton, P2PShareIcon);
     },
 
     stop() {
         removeChatBarButton("p2pshare");
-        removeMessageAccessory("p2pshare");
         void stopBroadcast();
         cleanupWatcher?.();
         cleanupWatcher = null;

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { allowedUrl, insideRoot, isAppVersionDir, isDiscordHost, isMainDiscordPage } from "./guards";
+import { RELAYS } from "../constants";
+import { allowedRelay, allowedUrl, insideRoot, isAppVersionDir, isDiscordHost, isMainDiscordPage, RELAY_URLS } from "./guards";
 
 const ROOT = "C:\\Users\\x\\AppData\\Roaming\\P2PShare";
 
@@ -52,4 +53,16 @@ test("isMainDiscordPage", () => {
     assert.ok(isMainDiscordPage("/app"));
     assert.ok(!isMainDiscordPage("/popout"));
     assert.ok(!isMainDiscordPage("/overlay"));
+});
+
+test("allowedRelay so libera os relays da lista", () => {
+    assert.ok(allowedRelay("wss://relay.damus.io"));
+    assert.ok(!allowedRelay("wss://evil.example"));
+    assert.ok(!allowedRelay("ws://relay.damus.io"));
+    assert.ok(!allowedRelay("wss://relay.damus.io/../x"));
+    assert.ok(!allowedRelay(42));
+});
+
+test("lista da ponte e a do plugin sao a mesma", () => {
+    assert.deepEqual([...RELAY_URLS].sort(), [...RELAYS].sort());
 });

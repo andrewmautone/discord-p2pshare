@@ -5,6 +5,7 @@
  */
 
 import type { CaptureChoice, CaptureSource } from "../capture";
+import type { RelaySocket } from "../nostr/pool";
 
 /**
  * Tudo que o plugin precisa do client mod hospedeiro.
@@ -89,24 +90,20 @@ export interface Host {
      */
     onVoiceChannelChange(handler: (channelId: string | null) => void): () => void;
 
-    // --- aviso pelo status do Discord ---
-    /**
-     * Publica a atividade de transmissão no status (null retira).
-     * Devolve false quando não deu — quem chama recorre ao chat.
-     */
-    setBroadcastActivity(activity: object | null): boolean;
-    /** "Compartilhar minha atividade" ligado? null quando não dá para saber. */
-    isActivitySharingEnabled(): boolean | null;
-    /** Quem está no canal de voz, com as atividades conhecidas de cada um. */
-    getVoiceChannelMembers(channelId: string): {
-        userId: string;
-        username: string;
-        activities: unknown[];
-    }[];
-    /** Mudou a presença de alguém ou quem está na voz. */
-    onPresenceChange(handler: () => void): () => void;
-    /** Anunciar também com mensagem no chat, mesmo com o status funcionando. */
-    alwaysAnnounceInChat(): boolean;
+    // --- descoberta pelos relays Nostr ---
+    /** Conexão com um relay (a página do Discord não pode abrir sozinha). */
+    openRelaySocket(url: string): RelaySocket;
+    /** Servidor aberto na tela, ou null. */
+    getSelectedGuildId(): string | null;
+    /** Servidor dono de um canal, ou null. */
+    getChannelGuildId(channelId: string): string | null;
+    /** Canais de voz do servidor que o usuário enxerga. */
+    getGuildVoiceChannelIds(guildId: string): string[];
+    /** A pessoa está agora neste canal de voz? */
+    isUserInVoiceChannel(userId: string, channelId: string): boolean;
+    /** Troca de servidor/canal na tela ou mudança de quem está na voz. */
+    onNavigationChange(handler: () => void): () => void;
+
 
     // --- interface ---
     toast(message: string, kind: ToastKind): void;
@@ -157,16 +154,6 @@ export interface Host {
      */
     setOverlayViewers(sessionId: string, names: string[]): void;
 
-    /**
-     * Avisa que existe uma transmissão para assistir.
-     *
-     * No Vencord isso é no-op: o botão "Assistir" é renderizado direto na
-     * mensagem pela API de accessories. No BetterDiscord, que não tem essa
-     * API, vira uma notificação clicável.
-     */
-    announceBeacon(notice: BeaconNotice, onWatch: () => void): void;
-    /** Retira o aviso quando a transmissão acaba. */
-    revokeBeacon(sessionId: string): void;
 
     /**
      * Marca quem está transmitindo na lista de participantes do canal de voz.

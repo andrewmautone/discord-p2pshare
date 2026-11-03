@@ -21,7 +21,7 @@
 import * as path from "path";
 
 import { fileLog } from "./filelog";
-import { isAppVersionDir } from "./guards";
+import { allowedRelay, isAppVersionDir, isDiscordHost } from "./guards";
 
 const electron = require("electron") as typeof import("electron");
 // fs sem o suporte a asar do Electron: aqui .asar e arquivo, nao pasta.
@@ -110,8 +110,94 @@ function watchUpdates(resources: string): void {
     electron.app.on("before-quit", run);
 }
 
+/**
+ * Conexões com os relays Nostr, a pedido da página do Discord.
+ *
+ * A CSP da página só deixa abrir WebSocket para domínios do Discord, então o
+ * socket mora aqui e os dados passam por IPC. Só os relays da lista, só para
+ * a página principal do Discord, e com teto de conexões e de tamanho.
+ */
+const MAX_SOCKETS = 16;
+const MAX_FRAME = 256 * 1024;
+
+function relayBridge(): void {
+    const { ipcMain } = electron;
+    let next = 0;
+    const sockets = new Map<number, { ws: WebSocket; owner: Electron.WebContents; }>();
+    const watched = new Set<Electron.WebContents>();
+
+    const fromDiscord = (e: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): boolean => {
+        try {
+            return isDiscordHost(new URL(e.senderFrame?.url ?? "").hostname);
+        } catch {
+            return false;
+        }
+    };
+
+    const emit = (owner: Electron.WebContents, id: number, type: string, data?: string) => {
+        if (!owner.isDestroyed()) owner.send("p2pshare:relay-event", id, type, data);
+    };
+
+    const drop = (id: number) => {
+        const s = sockets.get(id);
+        if (!s) return;
+        sockets.delete(id);
+        try {
+            s.ws.close();
+        } catch { /* já fechado */ }
+    };
+
+    ipcMain.handle("p2pshare:relay-open", (e, url: unknown) => {
+        if (!fromDiscord(e)) throw new Error("origem não permitida");
+        if (!allowedRelay(url)) throw new Error("relay não permitido");
+        const mine = [...sockets.values()].filter(s => s.owner === e.sender).length;
+        if (mine >= MAX_SOCKETS) throw new Error("conexões demais");
+
+        const id = ++next;
+        const owner = e.sender;
+        const ws = new WebSocket(url);
+        sockets.set(id, { ws, owner });
+
+        ws.onopen = () => emit(owner, id, "open");
+        ws.onmessage = m => {
+            const data = String(m.data);
+            if (data.length <= MAX_FRAME) emit(owner, id, "message", data);
+        };
+        ws.onclose = () => {
+            if (sockets.delete(id)) emit(owner, id, "close");
+        };
+        ws.onerror = () => { /* onclose vem em seguida */ };
+
+        // Página recarregada ou fechada: nada de socket órfão. Um ouvinte por página.
+        if (!watched.has(owner)) {
+            watched.add(owner);
+            owner.once("destroyed", () => {
+                watched.delete(owner);
+                for (const [sid, s] of sockets) if (s.owner === owner) drop(sid);
+            });
+        }
+        return id;
+    });
+
+    ipcMain.on("p2pshare:relay-send", (e, id: unknown, data: unknown) => {
+        const s = typeof id === "number" ? sockets.get(id) : undefined;
+        if (!s || s.owner !== e.sender || typeof data !== "string" || data.length > MAX_FRAME) return;
+        if (s.ws.readyState === WebSocket.OPEN) s.ws.send(data);
+    });
+
+    ipcMain.on("p2pshare:relay-close", (e, id: unknown) => {
+        const s = typeof id === "number" ? sockets.get(id) : undefined;
+        if (s && s.owner === e.sender) drop(id as number);
+    });
+}
+
 export function init({ resources }: { resources: string; }): void {
     registerPreload();
+    try {
+        relayBridge();
+    } catch (err) {
+        log("ponte dos relays indisponível", err);
+    }
     watchUpdates(resources);
     log("carregador ativo");
 }

@@ -42,10 +42,9 @@ import {
     initWatcher,
     isWatching,
     onBeaconsChange,
-    refreshBeaconNotices,
-    scanChannelHistory,
     startWatching
 } from "./watch";
+import { stopSignaling } from "./signaling";
 
 declare const BdApi: any;
 
@@ -62,7 +61,6 @@ export default class P2PShare {
     private cleanupUpdater: (() => void) | null = null;
     private cleanupVoiceBtn: (() => void) | null = null;
     private cleanupBeacons: (() => void) | null = null;
-    private cleanupBeaconSound: (() => void) | null = null;
     private cleanupVoice: (() => void) | null = null;
 
     /** Relógio de espera pelo login; parar o plugin antes disso o cancela. */
@@ -130,7 +128,7 @@ export default class P2PShare {
         });
 
         // Quem aparece com AO VIVO: eu, se estiver transmitindo, mais todo
-        // beacon ativo no canal.
+        // aviso vivo nos canais de voz do servidor.
         const refreshLive = () => {
             const users: { id: string; names: string[]; onWatch?: () => void; }[] = [];
 
@@ -147,9 +145,10 @@ export default class P2PShare {
                     onWatch: isWatching(b.sessionId)
                         ? undefined
                         : () => {
-                            // Da lista lateral dá para clicar sem estar vendo a
-                            // chamada; sem isto o vídeo abriria fora de vista.
-                            ui.focusChannel(b.channelId);
+                            // Fora da chamada, startWatching só explica que é
+                            // preciso entrar. Dentro, foca a chamada antes:
+                            // da lista lateral dá para clicar sem estar vendo.
+                            if (beaconIsHere(b)) ui.focusChannel(b.channelId);
                             void startWatching(b);
                         }
                 });
@@ -160,53 +159,10 @@ export default class P2PShare {
 
         this.cleanupBeacons = onBeaconsChange(refreshLive);
 
-        // Sessões que já anunciei com som, para tocar uma vez por transmissão
-        // e não a cada repintura da lista.
-        const announced = new Set<string>();
-
-        // Uma varredura do histórico descobre transmissões que já estavam no
-        // ar antes de eu chegar. Tocar o som nelas seria anunciar como novo
-        // algo que começou sem mim — o Discord toca quando a transmissão
-        // começa, não quando você repara nela.
-        let scanning = false;
-
-        this.cleanupBeaconSound = onBeaconsChange(beacons => {
-            // Transmissão de outra sala não me chama: o Discord entrega
-            // mensagem de todo canal visível, e sem este filtro o som tocava
-            // por gente que eu nem estava acompanhando.
-            const live = new Set(
-                beacons.filter(beaconIsHere).map(b => b.sessionId)
-            );
-
-            for (const sessionId of live) {
-                if (announced.has(sessionId)) continue;
-                announced.add(sessionId);
-
-                if (!scanning) playStreamStarted();
-            }
-
-            for (const sessionId of [...announced]) {
-                if (live.has(sessionId)) continue;
-
-                announced.delete(sessionId);
-                playStreamStopped();
-            }
-        });
-
-        // Quem entra no canal depois do início da transmissão nunca viu o
-        // beacon passar: ele só existe como mensagem antiga no chat.
-        this.cleanupVoice = onVoiceChannelChange(channelId => {
-            // Sair da sala apaga os avisos de lá; entrar acende os de cá.
-            // Vale também para channelId nulo, que é a desconexão.
-            refreshBeaconNotices();
-
-            if (!channelId) return;
-
-            scanning = true;
-            void scanChannelHistory(channelId)
-                .then(refreshBeaconNotices)
-                .finally(() => { scanning = false; });
-        });
+        // O selo é silencioso de propósito: sem som e sem notificação para o
+        // aviso de outra pessoa. Trocar de chamada muda o que dá para assistir
+        // (o selo só abre o vídeo de dentro da mesma sala), então repinta.
+        this.cleanupVoice = onVoiceChannelChange(() => refreshLive());
 
         // Só o transmissor ouve alguém entrando — é ele que precisa saber.
         let { viewers, active } = getBroadcastState();
@@ -261,9 +217,6 @@ export default class P2PShare {
         this.cleanupBeacons?.();
         this.cleanupBeacons = null;
 
-        this.cleanupBeaconSound?.();
-        this.cleanupBeaconSound = null;
-
         this.cleanupVoice?.();
         this.cleanupVoice = null;
 
@@ -275,6 +228,10 @@ export default class P2PShare {
 
         this.cleanupWatcher?.();
         this.cleanupWatcher = null;
+
+        // Dá um instante para o aviso de fim sair antes de fechar os relays;
+        // se não sair, o aviso expira sozinho nos outros em segundos.
+        setTimeout(stopSignaling, 1500);
 
         ui.unmountLauncher();
         ui.unmountAllOverlays();
@@ -420,29 +377,8 @@ export default class P2PShare {
             paintHelper();
         }, 1500);
 
-        const chat = document.createElement("label");
-        chat.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:20px;cursor:pointer";
-
-        const chatCheck = document.createElement("input");
-        chatCheck.type = "checkbox";
-        chatCheck.checked = loadSetting("announceInChat", false);
-        chatCheck.addEventListener("change", () => saveSetting("announceInChat", chatCheck.checked));
-
-        const chatText = document.createElement("span");
-        chatText.textContent = "Avisar também com mensagem no chat";
-        chat.append(chatCheck, chatText);
-
-        const chatHint = document.createElement("div");
-        chatHint.textContent =
-            "O aviso vai pelo seu status do Discord (\"Jogando P2PShare\"), sem " +
-            "mensagem no canal. A mensagem só é usada se o status não der — por " +
-            "exemplo com \"Compartilhar minha atividade\" desligado. Ligue isto " +
-            "se alguém da chamada ainda usa uma versão antiga do plugin.";
-        chatHint.style.cssText =
-            "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
-
         wrap.append(label, hint, slider, auto, autoHint, audio, audioHint,
-            chat, chatHint, modeLabel, modeHint, helperRow);
+            modeLabel, modeHint, helperRow);
         return wrap;
     }
 }
