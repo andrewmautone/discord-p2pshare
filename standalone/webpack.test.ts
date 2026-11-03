@@ -45,3 +45,28 @@ test("sem cache devolve vazio", () => {
     assert.equal(searchModules(null, () => true), undefined);
     assert.deepEqual(searchModules(undefined, () => true, { first: false }), []);
 });
+
+/** Imita o proxy de traducoes do Discord: qualquer chave devolve uma funcao. */
+function intlProxy(): unknown {
+    return new Proxy({}, {
+        get(_t, key) {
+            if (key === Symbol.toStringTag) return "IntlMessagesProxy";
+            return () => ({ locale: "en-US", ast: [] });
+        }
+    });
+}
+
+test("pula o IntlMessagesProxy, que casaria com qualquer filtro", () => {
+    const realStore = { getCurrentUser: () => ({ id: "9" }), getUser: () => null };
+    const withProxy = {
+        // Vem antes de proposito: e assim no Discord real (modulo 2077).
+        1: { exports: { default: intlProxy(), messagesLoader: {} } },
+        2: { exports: { A: intlProxy() } },
+        3: { exports: intlProxy() },
+        4: { exports: { default: realStore } }
+    };
+
+    assert.equal(searchModules(withProxy, m => m?.getCurrentUser && m?.getUser), realStore);
+    assert.equal(searchModules(withProxy, m => m?.getCurrentUser && m?.getUser, { searchExports: true }), realStore);
+    assert.deepEqual(searchModules(withProxy, m => m?.getCurrentUser, { first: false }), [realStore]);
+});

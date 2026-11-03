@@ -31,9 +31,22 @@ function isSearchable(value: unknown): value is Record<string, unknown> {
     return value !== null && (typeof value === "object" || typeof value === "function");
 }
 
+/**
+ * Valores que nunca sao o modulo procurado e casariam com qualquer filtro.
+ *
+ * O caso que importa e o proxy de traducoes do Discord: toda propriedade dele
+ * devolve uma funcao, entao `m?.getCurrentUser && m?.getUser` casava com ele
+ * antes do UserStore, e o plugin rodava com stores falsos. BD e Vencord pulam
+ * esse proxy pelo mesmo Symbol.toStringTag.
+ */
 function skip(value: unknown): boolean {
     const g = globalThis as any;
-    return value === g.window || value === g.document || value === g.document?.documentElement;
+    if (value === g.window || value === g.document || value === g.document?.documentElement) return true;
+    try {
+        return (value as any)?.[Symbol.toStringTag] === "IntlMessagesProxy";
+    } catch {
+        return true;
+    }
 }
 
 function matchModule(exp: unknown, filter: Filter, opts: GetModuleOptions): unknown {
@@ -68,7 +81,7 @@ function matchModule(exp: unknown, filter: Filter, opts: GetModuleOptions): unkn
     } catch {
         def = undefined;
     }
-    if (isSearchable(def) && safeTest(filter, def)) {
+    if (isSearchable(def) && !skip(def) && safeTest(filter, def)) {
         return opts.defaultExport === false ? exp : def;
     }
     return undefined;
