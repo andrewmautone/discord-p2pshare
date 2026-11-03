@@ -630,7 +630,8 @@ procedure CurPageChanged(CurPageID: Integer);
 begin
   if (CurPageID = wpFinished) and StandaloneMode() then
     WizardForm.FinishedLabel.Caption :=
-      'O P2PShare foi instalado.' + #13#10 + #13#10 +
+      'O P2PShare foi instalado, junto com o componente de audio (o som da ' +
+      'transmissao ja funciona, sem baixar nada).' + #13#10 + #13#10 +
       'Abra o Discord e entre num canal de voz: o botao de tela do P2PShare aparece ' +
       'no painel de voz. Clique direito nele abre as configuracoes.' + #13#10 + #13#10 +
       'Se uma atualizacao do Discord fizer o P2PShare sumir, rode este instalador ' +
@@ -691,6 +692,12 @@ begin
     DeleteFile(ExpandConstant('{userappdata}\BetterDiscord\plugins\p2pshare-debug.json'));
     DeleteFile(ExpandConstant('{userappdata}\BetterDiscord\plugins\p2pshare-audio-debug.json'));
     DeleteFile(ExpandConstant('{userappdata}\BetterDiscord\plugins\p2pshare-sounds-debug.json'));
+    { O componente de audio grava ao lado de si: porta, token e log. }
+    DeleteFile(ExpandConstant('{userappdata}\BetterDiscord\plugins\p2pshare-audio.port'));
+    DeleteFile(ExpandConstant('{userappdata}\BetterDiscord\plugins\p2pshare-audio.token'));
+    DeleteFile(ExpandConstant('{userappdata}\BetterDiscord\plugins\p2pshare-audio.log'));
+    { Se o plugin baixou o componente sozinho, ele nao esta no log do Inno. }
+    DeleteFile(ExpandConstant('{userappdata}\BetterDiscord\plugins\p2pshare-audio.exe'));
 
     if not UninstallSilent() then
       MsgBox('P2PShare removido.' + #13#10 + #13#10 +

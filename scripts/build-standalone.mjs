@@ -14,6 +14,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -60,11 +61,32 @@ await writeFile(resolve(standaloneDir, "app.asar"), packAsar({
 await copyFile(resolve(root, "scripts/LEIA-ME.txt"), resolve(outDir, "LEIA-ME.txt"));
 console.log("carregador próprio: release/standalone/");
 
-for (const need of ["P2PShare.plugin.js", "p2pshare-audio.exe"]) {
-    if (!existsSync(resolve(outDir, need))) {
-        console.warn(`aviso: falta release/${need} — o instalador não compila sem ele`);
-    }
+// O componente de áudio vai sempre dentro do instalador, e tem que ser o
+// exato binário que o plugin aceita: o plugin confere o SHA-256 antes de
+// executar e, se não bater, baixa outro na primeira transmissão. Aqui o hash
+// vem do próprio P2PShare.plugin.js que vai junto, então os dois não divergem.
+const pluginFile = resolve(outDir, "P2PShare.plugin.js");
+if (!existsSync(pluginFile)) throw new Error("falta release/P2PShare.plugin.js");
+const pluginSrc = await readFile(pluginFile, "utf8");
+const helperSha = pluginSrc.match(/HELPER_SHA256 = "([0-9a-f]{64})"/)?.[1];
+const helperTag = pluginSrc.match(/HELPER_TAG = "([^"]+)"/)?.[1];
+if (!helperSha || !helperTag) throw new Error("não achei HELPER_SHA256/HELPER_TAG no plugin");
+
+const helperFile = resolve(outDir, "p2pshare-audio.exe");
+const sha256 = buf => createHash("sha256").update(buf).digest("hex");
+
+let helperOk = existsSync(helperFile) && sha256(await readFile(helperFile)) === helperSha;
+if (!helperOk) {
+    const url = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${helperTag}/p2pshare-audio.exe`;
+    console.log(`componente de áudio ausente ou diferente do que o plugin espera; baixando ${helperTag}...`);
+    const res = await fetch(url, { redirect: "follow" });
+    if (!res.ok) throw new Error(`download do componente de áudio falhou: ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (sha256(buf) !== helperSha) throw new Error("componente de áudio baixado não confere com HELPER_SHA256 do plugin");
+    await writeFile(helperFile, buf);
+    helperOk = true;
 }
+console.log(`componente de áudio: ${helperSha.slice(0, 16)}… (confere com o plugin)`);
 
 const ISCC_CANDIDATES = [
     `${process.env.LOCALAPPDATA}\\Programs\\Inno Setup 6\\ISCC.exe`,
