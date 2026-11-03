@@ -8,6 +8,7 @@ import { formatMbps } from "../../bitrate";
 import type { CaptureChoice, CaptureSource } from "../../capture";
 import { isImpostor } from "./api";
 import { helperReady } from "./audioHelper";
+import { type NativeButtonMode, isShareScreenLabel, shouldIntercept } from "../../golive";
 
 declare const BdApi: any;
 
@@ -212,10 +213,9 @@ const CSS = `
     padding: 2px 9px;
 }
 .p2ps-overlay-bar button:disabled { opacity: .4; cursor: default; }
-.p2ps-voice-btn { position: relative; }
-/* As classes do Discord nao dimensionam o icone: o SVG deles carrega
-   width/height proprios. Sem isto o botao existe com 0 pixel. */
-.p2ps-voice-btn svg { width: 20px; height: 20px; }
+/* Botao nativo do Discord assumido pelo P2PShare. Marcado por atributo, nao
+   por classe: o React reescreve o className a cada mudanca de estado. */
+[data-p2ps-native] { position: relative; }
 .p2ps-voice-count {
     position: absolute;
     bottom: 0;
@@ -537,10 +537,24 @@ export function unmountLauncher(): void {
 
 // ------------------------------------------------- botao no painel de voz
 
-/** elemento-âncora -> botao que injetamos por causa dele */
-const voiceBtns = new Map<HTMLElement, HTMLElement>();
+/**
+ * O P2PShare nao cria botao proprio: assume o "Compartilhar tela" nativo, na
+ * barra da chamada e no painel de voz. O clique e' pego na fase de captura
+ * do `window`, antes do React (que escuta no #app-mount), entao funciona
+ * igual no BetterDiscord e no carregador standalone, sem patch de modulo.
+ */
+const NATIVE_ATTR = "data-p2ps-native";
+/** Rotulo original do Discord, guardado antes de pintarmos o nosso. */
+const LABEL_ATTR = "data-p2ps-label";
+
+/** Botoes nativos assumidos (marcados) neste momento. */
+const voiceBtns = new Set<HTMLElement>();
 let voiceObserver: MutationObserver | null = null;
 let lastState = { active: false, viewers: 0 };
+let nativeMode: NativeButtonMode = "p2p";
+/** Ligado enquanto nos mesmos clicamos no nativo para abrir o Go Live. */
+let bypassClick = false;
+let onNativeToggle: ((anchor: HTMLElement) => void) | null = null;
 
 function isVisible(el: HTMLElement | null): boolean {
     if (!el || !el.isConnected) return false;
@@ -548,175 +562,168 @@ function isVisible(el: HTMLElement | null): boolean {
     return r.width > 0 && r.height > 0;
 }
 
-const isOurs = (el: Element | null) => !!el?.classList.contains("p2ps-voice-btn");
+/** Elementos do proprio plugin (flutuante, menus) nunca sao "o nativo". */
+const isOurs = (el: Element | null) => !!el?.closest('[class*="p2ps-"]');
+
+/** Rotulo que o Discord deu ao botao, ignorando o que nos pintamos. */
+function nativeLabelOf(btn: HTMLElement): string {
+    return btn.getAttribute(LABEL_ATTR) ?? btn.getAttribute("aria-label") ?? "";
+}
 
 /**
- * Sobe ate' o nivel em que os controles sao irmaos.
+ * Acha os botoes nativos de compartilhar tela e os marca.
  *
- * O Discord embrulha cada botao da barra em varios divs de um filho so'.
- * Inserir dentro desse embrulho empilha o botao embaixo do vizinho em vez de
- * ao lado; o lugar certo e' ao lado do bloco inteiro.
+ * Pelo icone ou pelo rotulo. Um botao ja' marcado continua sendo nosso
+ * mesmo depois de pintarmos o rotulo dele com o texto do P2P.
  */
-function climbToPeer(el: HTMLElement): HTMLElement {
-    let node = el;
-    while (
-        node.parentElement &&
-        node.parentElement !== document.body &&
-        node.parentElement.childElementCount === 1
-    ) {
-        node = node.parentElement;
+function findNativeButtons(): HTMLElement[] {
+    const found = new Set<HTMLElement>();
+
+    for (const btn of document.querySelectorAll<HTMLElement>(`[${NATIVE_ATTR}]`)) {
+        found.add(btn);
     }
-    return node;
-}
-
-interface Site {
-    /** Elemento que identifica este ponto de injecao. */
-    host: HTMLElement;
-    /** De quem copiar as classes para o botao parecer nativo. */
-    style: HTMLElement;
-    /**
-     * Onde o botao vai ficar.
-     *
-     * Serve para nao injetar duas vezes na mesma barra: os seletores do
-     * Discord casam com elementos aninhados, e sem isto o mesmo lugar ganha
-     * um botao pelo filho e outro pelo pai.
-     */
-    container: HTMLElement;
-    place(btn: HTMLElement): void;
-}
-
-/**
- * Onde cabe um botao P2P.
- *
- * Dois lugares, com estruturas diferentes: a barra da chamada, onde cada
- * controle e' um bloco irmao, e o painel de voz do canto inferior esquerdo,
- * onde os botoes sao filhos diretos de um contêiner.
- */
-function collectSites(): Site[] {
-    const sites: Site[] = [];
-    const anchors = new Set<HTMLElement>();
 
     for (const path of document.querySelectorAll('button svg path[d^="M2 4.5C2 3.397"]')) {
         const btn = path.closest("button");
-        if (btn && !isOurs(btn)) anchors.add(btn as HTMLElement);
+        if (btn && !isOurs(btn)) found.add(btn as HTMLElement);
     }
 
     for (const btn of document.querySelectorAll<HTMLElement>("button[aria-label]")) {
         if (isOurs(btn)) continue;
-        const label = (btn.getAttribute("aria-label") || "").toLowerCase();
-        // Exige intencao de COMPARTILHAR: so' "tela" casaria com "Tela cheia".
-        if (!/compartilh|share/.test(label)) continue;
-        if (/cheia|fullscreen|convite|invite|link/.test(label)) continue;
-        anchors.add(btn);
+        if (isShareScreenLabel(btn.getAttribute("aria-label") || "")) found.add(btn);
     }
 
-    // 1. barra da chamada
-    for (const anchor of anchors) {
-        // No painel lateral os botoes ja' sao irmaos diretos; tratado abaixo.
-        if (anchor.closest('[class*="actionButtons"]')) continue;
-
-        const peer = climbToPeer(anchor);
-        sites.push({
-            host: anchor,
-            style: anchor,
-            container: peer.parentElement ?? peer,
-            place: btn => {
-                const wrapper = document.createElement("div");
-                wrapper.className = peer.className;
-                wrapper.appendChild(btn);
-                (btn as any).__p2psWrapper = wrapper;
-                peer.insertAdjacentElement("afterend", wrapper);
-            }
-        });
+    for (const btn of found) {
+        if (!btn.hasAttribute(NATIVE_ATTR)) btn.setAttribute(NATIVE_ATTR, "");
     }
 
-    // 2. painel de voz do canto inferior esquerdo
-    for (const row of document.querySelectorAll<HTMLElement>('[class*="actionButtons"]')) {
-        const sibling = [...row.querySelectorAll<HTMLElement>("button")].find(b => !isOurs(b));
-        if (!sibling) continue;
-
-        sites.push({
-            host: row,
-            style: sibling,
-            container: row,
-            place: btn => row.appendChild(btn)
-        });
-    }
-
-    return sites;
+    return [...found];
 }
 
+/** Pinta o estado do P2P no botao nativo: icone vermelho, rotulo e contador. */
 function paintOne(btn: HTMLElement): void {
     const svg = btn.querySelector("svg") as SVGElement | null;
-    if (svg) svg.style.color = lastState.active ? "var(--status-danger, #ed4245)" : "";
+    const ours = nativeMode === "p2p" && lastState.active;
 
-    const label = lastState.active
-        ? `Parar transmissão P2P — ${lastState.viewers} assistindo`
-        : "Transmitir tela via P2P";
-    btn.setAttribute("aria-label", label);
-    btn.title = label;
+    if (svg) svg.style.color = ours ? "var(--status-danger, #ed4245)" : "";
 
-    btn.querySelector(".p2ps-voice-count")?.remove();
-    if (lastState.active && lastState.viewers > 0) {
-        const badge = document.createElement("span");
-        badge.className = "p2ps-voice-count";
-        badge.textContent = String(lastState.viewers);
-        btn.appendChild(badge);
+    if (ours) {
+        if (!btn.hasAttribute(LABEL_ATTR)) {
+            btn.setAttribute(LABEL_ATTR, btn.getAttribute("aria-label") ?? "");
+        }
+        const label = `Parar transmissão P2P — ${lastState.viewers} assistindo`;
+        if (btn.getAttribute("aria-label") !== label) btn.setAttribute("aria-label", label);
+    } else if (btn.hasAttribute(LABEL_ATTR)) {
+        // Devolve o rotulo do Discord: e' por ele que sabemos se o Go Live
+        // nativo esta no ar.
+        btn.setAttribute("aria-label", btn.getAttribute(LABEL_ATTR) ?? "");
+        btn.removeAttribute(LABEL_ATTR);
+    }
+
+    const want = ours && lastState.viewers > 0 ? String(lastState.viewers) : null;
+    const badge = btn.querySelector<HTMLElement>(".p2ps-voice-count");
+    if (!want) {
+        badge?.remove();
+    } else if (!badge) {
+        const el = document.createElement("span");
+        el.className = "p2ps-voice-count";
+        el.textContent = want;
+        btn.appendChild(el);
+    } else if (badge.textContent !== want) {
+        badge.textContent = want;
     }
 }
 
-function removeBtn(btn: HTMLElement): void {
-    const wrapper = (btn as any).__p2psWrapper as HTMLElement | undefined;
-    (wrapper ?? btn).remove();
+/** Devolve o botao ao Discord exatamente como estava. */
+function releaseNative(btn: HTMLElement): void {
+    const svg = btn.querySelector("svg") as SVGElement | null;
+    if (svg) svg.style.color = "";
+    if (btn.hasAttribute(LABEL_ATTR)) {
+        btn.setAttribute("aria-label", btn.getAttribute(LABEL_ATTR) ?? "");
+        btn.removeAttribute(LABEL_ATTR);
+    }
+    btn.querySelector(".p2ps-voice-count")?.remove();
+    btn.removeAttribute(NATIVE_ATTR);
+}
+
+/**
+ * Clique no botao nativo, pego antes do React.
+ *
+ * Fase de captura no `window`: roda antes do ouvinte do React no #app-mount,
+ * entao cancelar aqui impede o Discord de abrir o Go Live.
+ */
+function onNativeClick(e: MouseEvent): void {
+    const target = e.target as Element | null;
+    const btn = target?.closest?.(`[${NATIVE_ATTR}]`) as HTMLElement | null;
+    if (!btn || !onNativeToggle) return;
+
+    const take = shouldIntercept({
+        mode: nativeMode,
+        bypass: bypassClick,
+        shiftKey: e.shiftKey,
+        p2pActive: lastState.active,
+        nativeLabel: nativeLabelOf(btn)
+    });
+    if (!take) return;
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    onNativeToggle(btn);
+}
+
+/** Muda o que o botao nativo faz; vale na hora, sem reiniciar o plugin. */
+export function setNativeButtonMode(mode: NativeButtonMode): void {
+    nativeMode = mode;
+    for (const btn of voiceBtns) paintOne(btn);
+}
+
+/** Ha' um botao nativo de compartilhar tela visivel agora? */
+export function hasNativeGoLive(): boolean {
+    return findNativeButtons().some(isVisible);
+}
+
+/**
+ * Abre o Go Live original do Discord, como se o P2PShare nao existisse.
+ *
+ * Clica no proprio botao nativo com a interceptacao suspensa: o Discord
+ * segue o caminho dele, com o seletor e as opcoes dele.
+ */
+export function openNativeGoLive(): boolean {
+    const btn = findNativeButtons().find(isVisible);
+    if (!btn) return false;
+
+    bypassClick = true;
+    try {
+        btn.click();
+    } finally {
+        bypassClick = false;
+    }
+    return true;
 }
 
 export function mountVoiceButton(opts: {
     onToggle: (anchor: HTMLElement) => void;
     onAnchorChange: (visible: boolean) => void;
+    mode: NativeButtonMode;
 }): () => void {
+    onNativeToggle = opts.onToggle;
+    nativeMode = opts.mode;
+    window.addEventListener("click", onNativeClick, true);
+
     const sync = () => {
-        for (const [host, btn] of voiceBtns) {
-            if (!host.isConnected || !btn.isConnected) {
-                removeBtn(btn);
-                voiceBtns.delete(host);
-            }
+        for (const btn of voiceBtns) {
+            if (!btn.isConnected) voiceBtns.delete(btn);
         }
 
-        // Sobras de re-render: mais de um botao nosso no mesmo lugar.
-        for (const btn of document.querySelectorAll<HTMLElement>(".p2ps-voice-btn")) {
-            const parent = btn.parentElement;
-            if (!parent) continue;
-
-            const ours = parent.querySelectorAll(".p2ps-voice-btn");
-            for (let i = 1; i < ours.length; i++) ours[i].remove();
-        }
-
-        for (const site of collectSites()) {
-            if (voiceBtns.has(site.host)) continue;
-
-            // Este lugar ja' tem um botao nosso, posto por outro seletor que
-            // casou com um elemento aninhado.
-            if (site.container.querySelector(".p2ps-voice-btn")) continue;
-
-            const btn = document.createElement("button");
-            // Herda as classes do vizinho: nasce com o visual do Discord.
-            btn.className = `${site.style.className} p2ps-voice-btn`;
-            btn.type = "button";
-            btn.innerHTML = SCREENSHARE_SVG;
-            btn.addEventListener("click", e => {
-                e.preventDefault();
-                e.stopPropagation();
-                opts.onToggle(btn);
-            });
-
-            site.place(btn);
+        for (const btn of findNativeButtons()) {
+            voiceBtns.add(btn);
+            // O React redesenha o botao e apaga cor e contador: repinta.
             paintOne(btn);
-            voiceBtns.set(site.host, btn);
         }
 
-        // Achar onde injetar nao basta: um botao invisivel deixaria o usuario
-        // sem forma de transmitir, e o flutuante ja teria sido escondido.
-        opts.onAnchorChange([...voiceBtns.values()].some(isVisible));
+        // Sem botao nativo a vista (ou no modo Discord), o flutuante e' a
+        // unica forma de transmitir via P2P.
+        opts.onAnchorChange(nativeMode === "p2p" && [...voiceBtns].some(isVisible));
         // A lista e a grade re-renderizam sozinhas; os selos precisam voltar.
         // A barra lateral vem depois da lista da chamada: ela desiste da linha
         // que ja' recebeu selo, e isso depende de a outra ter passado antes.
@@ -773,7 +780,9 @@ export function mountVoiceButton(opts: {
 
         voiceObserver?.disconnect();
         voiceObserver = null;
-        for (const btn of voiceBtns.values()) removeBtn(btn);
+        window.removeEventListener("click", onNativeClick, true);
+        onNativeToggle = null;
+        for (const btn of voiceBtns) releaseNative(btn);
         voiceBtns.clear();
         // O selo da barra lateral nao vive num mapa nosso: sem isto ele ficaria
         // no DOM do Discord depois do plugin sair.
@@ -786,7 +795,7 @@ let lastDumpKey = "";
 /** Fotografa o estado da injecao num arquivo, ja que o DevTools vive desligado. */
 export function dumpVoiceDiagnostics(): void {
     try {
-        const sites = collectSites();
+        const natives = [...voiceBtns];
         // Onde cada sessao esta agora: no quadro, solta em janela, ou em
         // lugar nenhum. E' o que separa "a janela fechou e nao devolveu" de
         // "devolveu, mas nao havia quadro para receber".
@@ -808,7 +817,8 @@ export function dumpVoiceDiagnostics(): void {
             videosNoDom: document.querySelectorAll(".p2ps-tile-video").length
         };
 
-        const key = sites.map(s => s.host.className).join("|") + "#" + voiceBtns.size
+        // Nada de className na chave: o do botao nativo muda a cada hover.
+        const key = nativeMode + "#" + natives.length + ":" + natives.filter(isVisible).length
             // Sem a parte do selo, mudanca so' na barra lateral nunca gravaria.
             + "#" + sidebarDiag.estrategiaEscolhida
             + ":" + sidebarDiag.linhas + ":" + sidebarDiag.selosAtivos
@@ -819,8 +829,8 @@ export function dumpVoiceDiagnostics(): void {
 
         const data = {
             quando: new Date().toISOString(),
-            pontosEncontrados: sites.length,
-            injetados: [...voiceBtns.values()].map(b => {
+            botaoNativo: nativeMode,
+            botoesNativos: natives.map(b => {
                 const r = b.getBoundingClientRect();
                 return {
                     visivel: isVisible(b),
@@ -854,7 +864,7 @@ export function dumpVoiceDiagnostics(): void {
 
 export function updateVoiceButton(state: { active: boolean; viewers: number; }): void {
     lastState = state;
-    for (const btn of voiceBtns.values()) paintOne(btn);
+    for (const btn of voiceBtns) paintOne(btn);
 }
 
 
@@ -1527,6 +1537,8 @@ export function openSourcePicker(sources: CaptureSource[]): Promise<CaptureChoic
                         <span data-act="audio-label"></span>
                     </label>
                     <span class="p2ps-foot-space"></span>
+                    <button class="p2ps-btn p2ps-btn-secondary" data-act="golive"
+                        title="Abre a transmissão normal do Discord (atalho: Shift+clique no botão)">Usar Go Live do Discord</button>
                     <button class="p2ps-btn p2ps-btn-secondary" data-act="cancel">Cancelar</button>
                     <button class="p2ps-btn" data-act="ok" disabled>Transmitir</button>
                 </div>
@@ -1618,6 +1630,15 @@ export function openSourcePicker(sources: CaptureSource[]): Promise<CaptureChoic
 
         okBtn.addEventListener("click", () => settle(selected));
         backdrop.querySelector('[data-act="cancel"]')!.addEventListener("click", () => settle(null));
+
+        // O botao nativo agora abre este seletor; daqui da' para cair no Go
+        // Live original. Sem botao nativo na tela nao ha' o que abrir.
+        const goLiveBtn = backdrop.querySelector('[data-act="golive"]') as HTMLElement;
+        if (!hasNativeGoLive()) goLiveBtn.remove();
+        goLiveBtn.addEventListener("click", () => {
+            settle(null);
+            openNativeGoLive();
+        });
         backdrop.addEventListener("click", e => { if (e.target === backdrop) settle(null); });
         document.addEventListener("keydown", onKey);
 

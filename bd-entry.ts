@@ -14,6 +14,7 @@ import {
     stopBroadcast
 } from "./broadcast";
 import { DEFAULT_BUDGET_MBPS } from "./constants";
+import type { NativeButtonMode } from "./golive";
 import { loadSetting, saveSetting, ui } from "./host/bd";
 import {
     getCurrentUserId,
@@ -119,12 +120,14 @@ export default class P2PShare {
             }
         });
 
-        // Botao no painel de voz do Discord, ao lado do de tela nativo.
-        // O flutuante fica como reserva: se o Discord mudar o HTML e a injecao
-        // parar de achar onde encaixar, ele reaparece sozinho.
+        // O botão "Compartilhar tela" do próprio Discord (barra da chamada e
+        // painel de voz) passa a abrir o P2PShare; Shift+clique abre o Go Live.
+        // O flutuante fica como reserva: se o Discord mudar o HTML e o botão
+        // nativo deixar de ser achado, ele reaparece sozinho.
         this.cleanupVoiceBtn = ui.mountVoiceButton({
             onToggle: toggle,
-            onAnchorChange: found => ui.setLauncherHidden(found)
+            onAnchorChange: found => ui.setLauncherHidden(found),
+            mode: loadSetting<NativeButtonMode>("nativeButton", "p2p")
         });
 
         // Quem aparece com AO VIVO: eu, se estiver transmitindo, mais todo
@@ -265,6 +268,31 @@ export default class P2PShare {
             saveSetting("uploadBudgetMbps", Number(slider.value));
         });
 
+        const native = document.createElement("label");
+        native.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:20px;cursor:pointer";
+
+        const nativeCheck = document.createElement("input");
+        nativeCheck.type = "checkbox";
+        nativeCheck.checked = loadSetting<NativeButtonMode>("nativeButton", "p2p") === "p2p";
+        nativeCheck.addEventListener("change", () => {
+            const mode: NativeButtonMode = nativeCheck.checked ? "p2p" : "discord";
+            saveSetting("nativeButton", mode);
+            ui.setNativeButtonMode(mode);
+        });
+
+        const nativeText = document.createElement("span");
+        nativeText.textContent = "O botão \"Compartilhar tela\" do Discord transmite via P2P";
+        native.append(nativeCheck, nativeText);
+
+        const nativeHint = document.createElement("div");
+        nativeHint.textContent =
+            "Ligado, o botão de tela da chamada abre o P2PShare; Shift+clique " +
+            "nele (ou \"Usar Go Live do Discord\" no seletor) abre a transmissão " +
+            "normal do Discord. Desligado, o botão volta a ser só do Discord e o " +
+            "P2P fica no botão flutuante.";
+        nativeHint.style.cssText =
+            "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
+
         const auto = document.createElement("label");
         auto.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:20px;cursor:pointer";
 
@@ -377,7 +405,7 @@ export default class P2PShare {
             paintHelper();
         }, 1500);
 
-        wrap.append(label, hint, slider, auto, autoHint, audio, audioHint,
+        wrap.append(label, hint, slider, native, nativeHint, auto, autoHint, audio, audioHint,
             modeLabel, modeHint, helperRow);
         return wrap;
     }
