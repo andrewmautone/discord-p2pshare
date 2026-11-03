@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { isImpostor } from "./api";
+
 declare const BdApi: any;
 
 /**
@@ -54,7 +56,7 @@ interface Strategy {
 }
 
 function getModule(filter: (m: any) => boolean, options?: any): any {
-    return BdApi.Webpack?.getModule?.(filter, options);
+    return BdApi.Webpack?.getModule?.((m: any) => !isImpostor(m) && filter(m), options);
 }
 
 /**

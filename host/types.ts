@@ -89,6 +89,25 @@ export interface Host {
      */
     onVoiceChannelChange(handler: (channelId: string | null) => void): () => void;
 
+    // --- aviso pelo status do Discord ---
+    /**
+     * Publica a atividade de transmissão no status (null retira).
+     * Devolve false quando não deu — quem chama recorre ao chat.
+     */
+    setBroadcastActivity(activity: object | null): boolean;
+    /** "Compartilhar minha atividade" ligado? null quando não dá para saber. */
+    isActivitySharingEnabled(): boolean | null;
+    /** Quem está no canal de voz, com as atividades conhecidas de cada um. */
+    getVoiceChannelMembers(channelId: string): {
+        userId: string;
+        username: string;
+        activities: unknown[];
+    }[];
+    /** Mudou a presença de alguém ou quem está na voz. */
+    onPresenceChange(handler: () => void): () => void;
+    /** Anunciar também com mensagem no chat, mesmo com o status funcionando. */
+    alwaysAnnounceInChat(): boolean;
+
     // --- interface ---
     toast(message: string, kind: ToastKind): void;
     /** Orçamento de upload configurado pelo usuário, em Mbps. */

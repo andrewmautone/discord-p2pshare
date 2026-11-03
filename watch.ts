@@ -6,6 +6,7 @@
 
 import { selectBeacons } from "./beacon";
 import { host } from "./host";
+import { beaconsFromPresence, isPresenceKey } from "./presence";
 import { type PeerTransport, ViewerPeer } from "./peers";
 import { type Beacon, observeSignals, sendHandshake } from "./signaling";
 
@@ -78,6 +79,8 @@ export function watchingCount(): number {
 function acceptBeacon(beacon: Beacon): void {
     if (beacons.has(beacon.messageId)) return;
     if (isDead(beacon.messageId)) return;
+    // A mesma transmissão pode chegar pelo status e pela mensagem de reserva.
+    for (const b of beacons.values()) if (b.sessionId === beacon.sessionId) return;
 
     beacons.set(beacon.messageId, beacon);
     notifyBeacons();
@@ -258,6 +261,40 @@ export function stopWatching(sessionId: string): void {
     }
 }
 
+/**
+ * Confere o status de quem está no meu canal de voz e acende ou apaga os
+ * avisos que vieram por ele. Idempotente: roda a cada mudança de presença,
+ * de voz, e num relógio de reserva.
+ */
+function syncPresenceBeacons(): void {
+    const channelId = host.getVoiceChannelId();
+    const found = channelId
+        ? beaconsFromPresence(channelId, host.getVoiceChannelMembers(channelId), host.getCurrentUserId())
+        : [];
+    const alive = new Set(found.map(b => b.messageId));
+
+    for (const [messageId, beacon] of [...beacons]) {
+        if (!isPresenceKey(messageId) || alive.has(messageId)) continue;
+
+        // Status sumiu: a transmissão acabou (ou eu saí da sala).
+        beacons.delete(messageId);
+        host.revokeBeacon(beacon.sessionId);
+        stopWatching(beacon.sessionId);
+        notifyBeacons();
+    }
+
+    for (const beacon of found) acceptBeacon(beacon);
+}
+
+/** Força uma conferência do status (por exemplo, ao entrar num canal). */
+export function refreshPresenceBeacons(): void {
+    try {
+        syncPresenceBeacons();
+    } catch (err) {
+        console.warn("[P2PShare] não deu para ler o status da chamada", err);
+    }
+}
+
 /** Assina o chat para descobrir beacons e receber answers. Devolve a limpeza. */
 export function initWatcher(): () => void {
     const myId = host.getCurrentUserId();
@@ -289,8 +326,19 @@ export function initWatcher(): () => void {
         }
     });
 
+    // Adiado: o listener pode rodar antes de o store aplicar a mudança.
+    const later = () => { setTimeout(refreshPresenceBeacons, 0); };
+    const unsubPresence = host.onPresenceChange(later);
+    const unsubVoice = host.onVoiceChannelChange(later);
+    // Reserva: nem toda mudança de presença passa pelos eventos que assinamos.
+    const timer = setInterval(refreshPresenceBeacons, 5000);
+    refreshPresenceBeacons();
+
     return () => {
         unsubscribe();
+        unsubPresence();
+        unsubVoice();
+        clearInterval(timer);
 
         // Esvaziar os beacons ANTES de parar de assistir: stopWatching
         // re-anuncia transmissões ainda no ar, e no desligamento do plugin

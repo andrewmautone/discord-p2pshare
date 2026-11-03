@@ -19,6 +19,7 @@ import {
     uploadTextAttachment
 } from "../discord/api";
 import { onMessageCreate, onMessageDelete, onVoiceChannelChange } from "../discord/events";
+import { getVoiceChannelMembers, onPresenceChange, setBroadcastActivity } from "../discord/presence";
 import { settings } from "../settings";
 import { openSourcePicker } from "../ui/SourcePicker";
 import { mountOverlay, setOverlayViewers, unmountAllOverlays, unmountOverlay } from "../ui/ViewerOverlay";
@@ -46,6 +47,12 @@ export const host: Host = {
     onMessageCreate,
     onMessageDelete,
     onVoiceChannelChange,
+
+    setBroadcastActivity,
+    isActivitySharingEnabled: () => null,
+    getVoiceChannelMembers,
+    onPresenceChange,
+    alwaysAnnounceInChat: () => settings.store.announceInChat,
 
     toast: (message, kind) => showToast(message, TOAST_TYPE[kind]),
     getBudgetMbps: () => settings.store.uploadBudgetMbps,

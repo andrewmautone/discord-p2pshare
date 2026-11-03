@@ -37,6 +37,12 @@ export const host: Host = {
     onMessageDelete: api.onMessageDelete,
     onVoiceChannelChange: api.onVoiceChannelChange,
 
+    setBroadcastActivity: api.setBroadcastActivity,
+    isActivitySharingEnabled: api.isActivitySharingEnabled,
+    getVoiceChannelMembers: api.getVoiceChannelMembers,
+    onPresenceChange: api.onPresenceChange,
+    alwaysAnnounceInChat: () => loadSetting("announceInChat", false),
+
     toast: (message, kind) => BdApi.UI.showToast(message, { type: TOAST_TYPE[kind] }),
     getBudgetMbps: () => loadSetting("uploadBudgetMbps", DEFAULT_BUDGET_MBPS),
     shouldCaptureAudio: () => loadSetting("captureAudio", true),

@@ -6,6 +6,7 @@
 
 import { formatMbps } from "../../bitrate";
 import type { CaptureChoice, CaptureSource } from "../../capture";
+import { isImpostor } from "./api";
 import { helperReady } from "./audioHelper";
 
 declare const BdApi: any;
@@ -1177,7 +1178,7 @@ function removeSidebarBadges(): void {
 /** Id do usuário atual, lido do próprio BdApi para não voltar ao host. */
 function currentUserId(): string | null {
     try {
-        return BdApi.Webpack.getModule((m: any) => m?.getCurrentUser && m?.getUser)
+        return BdApi.Webpack.getModule((m: any) => !isImpostor(m) && m?.getCurrentUser && m?.getUser)
             ?.getCurrentUser()?.id ?? null;
     } catch {
         return null;

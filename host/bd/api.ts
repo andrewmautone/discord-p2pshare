@@ -24,7 +24,32 @@ const { getModule } = BdApi.Webpack;
 
 type Filter = (m: any) => boolean;
 
-function lookup(filter: Filter): any {
+/**
+ * Objetos que dizem "sim" a qualquer filtro e nunca são o que procuramos.
+ *
+ * O caso real é o proxy de traduções do Discord: qualquer propriedade dele
+ * devolve uma função, então `m?.getCurrentUser && m?.getUser` casa com ele
+ * antes do UserStore. O BetterDiscord pula esse proxy, mas um carregador que
+ * não pule entregaria lixo no lugar de todo store — e nada funcionaria.
+ */
+export function isImpostor(m: any): boolean {
+    try {
+        if (m === window || m === document) return true;
+        if (m?.[Symbol.toStringTag] === "IntlMessagesProxy") return true;
+        // Qualquer outro proxy "responde tudo" também se denuncia assim.
+        return m != null && typeof m === "object"
+            && m["__p2pshare_inexistente__"] !== undefined;
+    } catch {
+        return true;
+    }
+}
+
+function guard(filter: Filter): Filter {
+    return m => !isImpostor(m) && filter(m);
+}
+
+function lookup(rawFilter: Filter): any {
+    const filter = guard(rawFilter);
     // 1. export direto
     let found = getModule(filter);
 
@@ -107,6 +132,15 @@ const MessageStore = findOptional(
 function nonce(): string {
     const DISCORD_EPOCH = 1420070400000n;
     return ((BigInt(Date.now()) - DISCORD_EPOCH) << 22n).toString();
+}
+
+/** O Discord já tem o usuário logado? Antes disso o plugin não inicia. */
+export function hasCurrentUser(): boolean {
+    try {
+        return Boolean(UserStore().getCurrentUser()?.id);
+    } catch {
+        return false;
+    }
 }
 
 export function getCurrentUserId(): string {
@@ -374,4 +408,113 @@ export function onMessageDelete(
 
     FluxDispatcher().subscribe("MESSAGE_DELETE", listener);
     return () => FluxDispatcher().unsubscribe("MESSAGE_DELETE", listener);
+}
+
+// --- aviso pelo status ("Jogando P2PShare") ---
+
+/** Store pelo nome que o próprio Discord dá a ele — o filtro mais estável. */
+function byStoreName(name: string): Filter {
+    return m => typeof m?.getName === "function" && m.getName() === name;
+}
+
+const VoiceStateStore = findOptional(byStoreName("VoiceStateStore"));
+
+const PresenceStore = findOptional(byStoreName("PresenceStore"));
+
+/** Guarda "Compartilhar minha atividade" em settings.status.showCurrentGame. */
+const UserSettingsProtoStore = findOptional(byStoreName("UserSettingsProtoStore"));
+
+/** Identifica a nossa atividade entre as outras que o Discord mantém localmente. */
+const ACTIVITY_SOCKET = "P2PShare";
+
+/**
+ * Publica (ou retira, com null) a atividade de transmissão.
+ *
+ * Mesmo caminho que o Discord usa para atividades locais (RPC de jogos): o
+ * cliente junta tudo e manda no presence do gateway. Devolve false se o
+ * despacho falhou — aí quem chama recorre à mensagem no chat.
+ */
+export function setBroadcastActivity(activity: object | null): boolean {
+    try {
+        FluxDispatcher().dispatch({
+            type: "LOCAL_ACTIVITY_UPDATE",
+            activity,
+            socketId: ACTIVITY_SOCKET
+        });
+        return true;
+    } catch (err) {
+        console.warn("[P2PShare] não deu para publicar o status", err);
+        return false;
+    }
+}
+
+/** null quando a configuração não foi encontrada (não dá para afirmar nada). */
+export function isActivitySharingEnabled(): boolean | null {
+    try {
+        const value = UserSettingsProtoStore()?.settings?.status?.showCurrentGame?.value;
+        return typeof value === "boolean" ? value : null;
+    } catch {
+        return null;
+    }
+}
+
+/** Membros do canal de voz, com as atividades que o Discord conhece de cada um. */
+export function getVoiceChannelMembers(channelId: string): {
+    userId: string;
+    username: string;
+    activities: unknown[];
+}[] {
+    const voice = VoiceStateStore();
+    const presence = PresenceStore();
+    if (!voice || !presence) return [];
+
+    let states: any;
+    try {
+        states = voice.getVoiceStatesForChannel(channelId);
+    } catch {
+        return [];
+    }
+
+    const ids = new Set<string>();
+    const list = Array.isArray(states) ? states
+        : states instanceof Map ? [...states.values()]
+            : Object.values(states ?? {});
+
+    for (const s of list as any[]) {
+        const id = s?.userId ?? s?.user_id ?? s?.user?.id;
+        if (typeof id === "string") ids.add(id);
+    }
+    // Store indexado por userId com valor sem o campo: as chaves bastam.
+    if (ids.size === 0 && states && !Array.isArray(states) && !(states instanceof Map)) {
+        for (const key of Object.keys(states)) if (/^\d+$/.test(key)) ids.add(key);
+    }
+
+    return [...ids].map(userId => {
+        let activities: unknown[] = [];
+        try {
+            activities = presence.getActivities(userId) ?? [];
+        } catch { /* sem presence: sem atividades */ }
+
+        return { userId, username: getUsername(userId), activities };
+    });
+}
+
+/**
+ * Qualquer mudança que possa acender ou apagar um aviso: presença de alguém,
+ * gente entrando ou saindo da voz.
+ */
+export function onPresenceChange(handler: () => void): () => void {
+    const events = ["PRESENCE_UPDATES", "PRESENCES_REPLACE", "VOICE_STATE_UPDATES"];
+    const listener = () => {
+        try {
+            handler();
+        } catch (err) {
+            console.error("[P2PShare] handler de presença falhou", err);
+        }
+    };
+
+    for (const e of events) FluxDispatcher().subscribe(e, listener);
+    return () => {
+        for (const e of events) FluxDispatcher().unsubscribe(e, listener);
+    };
 }

@@ -26,6 +26,11 @@ export const settings = definePluginSettings({
         description: "Transmitir o áudio do sistema (inclui o áudio do próprio Discord)",
         default: true
     },
+    announceInChat: {
+        type: OptionType.BOOLEAN,
+        description: "Avisar também com mensagem no chat (o padrão é só pelo status do Discord)",
+        default: false
+    },
     audioDeviceId: {
         type: OptionType.STRING,
         description: "Id do dispositivo de áudio a capturar (vazio = áudio do sistema)",

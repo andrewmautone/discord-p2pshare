@@ -17,6 +17,7 @@ import { DEFAULT_BUDGET_MBPS } from "./constants";
 import { loadSetting, saveSetting, ui } from "./host/bd";
 import {
     getCurrentUserId,
+    hasCurrentUser,
     getCurrentUsername,
     getUsername,
     onVoiceChannelChange
@@ -64,7 +65,30 @@ export default class P2PShare {
     private cleanupBeaconSound: (() => void) | null = null;
     private cleanupVoice: (() => void) | null = null;
 
+    /** Relógio de espera pelo login; parar o plugin antes disso o cancela. */
+    private readyTimer: ReturnType<typeof setInterval> | null = null;
+
+    /**
+     * O carregador pode chamar start() antes de o Discord ter o usuário
+     * logado. Sem usuário nada funciona (o watcher precisa do próprio id),
+     * então espera ele aparecer em vez de explodir.
+     */
     start(): void {
+        if (hasCurrentUser()) {
+            this.startReady();
+            return;
+        }
+
+        console.info("[P2PShare] esperando o login do Discord para iniciar");
+        this.readyTimer = setInterval(() => {
+            if (!hasCurrentUser()) return;
+            if (this.readyTimer) clearInterval(this.readyTimer);
+            this.readyTimer = null;
+            this.startReady();
+        }, 500);
+    }
+
+    private startReady(): void {
         ui.injectStyles();
 
         // Parado, o botão inicia. Transmitindo, ele abre o menu — parar vira
@@ -223,6 +247,12 @@ export default class P2PShare {
     }
 
     stop(): void {
+        if (this.readyTimer) {
+            clearInterval(this.readyTimer);
+            this.readyTimer = null;
+            return;
+        }
+
         void stopBroadcast();
 
         this.cleanupState?.();
@@ -390,8 +420,29 @@ export default class P2PShare {
             paintHelper();
         }, 1500);
 
+        const chat = document.createElement("label");
+        chat.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:20px;cursor:pointer";
+
+        const chatCheck = document.createElement("input");
+        chatCheck.type = "checkbox";
+        chatCheck.checked = loadSetting("announceInChat", false);
+        chatCheck.addEventListener("change", () => saveSetting("announceInChat", chatCheck.checked));
+
+        const chatText = document.createElement("span");
+        chatText.textContent = "Avisar também com mensagem no chat";
+        chat.append(chatCheck, chatText);
+
+        const chatHint = document.createElement("div");
+        chatHint.textContent =
+            "O aviso vai pelo seu status do Discord (\"Jogando P2PShare\"), sem " +
+            "mensagem no canal. A mensagem só é usada se o status não der — por " +
+            "exemplo com \"Compartilhar minha atividade\" desligado. Ligue isto " +
+            "se alguém da chamada ainda usa uma versão antiga do plugin.";
+        chatHint.style.cssText =
+            "font-size:12px;color:var(--text-muted,#72767d);margin-top:4px";
+
         wrap.append(label, hint, slider, auto, autoHint, audio, audioHint,
-            modeLabel, modeHint, helperRow);
+            chat, chatHint, modeLabel, modeHint, helperRow);
         return wrap;
     }
 }

@@ -8,6 +8,7 @@ import { CaptureError, captureScreen } from "./capture";
 import { newSessionId } from "./codec";
 import { host } from "./host";
 import { BroadcastPeers, type BroadcastQuality, type PeerTransport } from "./peers";
+import { broadcastActivity, canAnnounceByStatus } from "./presence";
 import { observeSignals, postBeacon, removeBeacon, sendHandshake } from "./signaling";
 
 interface Session {
@@ -15,7 +16,10 @@ interface Session {
     /** Encerra o auxiliar de áudio, quando houver. */
     stopAudio?: () => void;
     channelId: string;
-    beaconId: string;
+    /** Mensagem de aviso no chat; ausente quando o status bastou. */
+    beaconId?: string;
+    /** O aviso está no status do Discord e precisa ser retirado no fim. */
+    viaStatus: boolean;
     stream: MediaStream;
     peers: BroadcastPeers;
     unsubscribe: () => void;
@@ -211,6 +215,7 @@ export async function startBroadcast(): Promise<void> {
         // beforeunload não espera promessa: fechar os peers é o que dá para
         // garantir, e é o que corta o vídeo de quem assiste na hora.
         session?.peers.closeAll();
+        if (session?.viaStatus) host.setBroadcastActivity(null);
         void stopBroadcast();
     };
     window.addEventListener("beforeunload", onUnload);
@@ -229,21 +234,35 @@ export async function startBroadcast(): Promise<void> {
         }
     });
 
-    let beaconId: string;
-    try {
-        beaconId = await postBeacon(channelId, sessionId, host.getCurrentUsername());
-    } catch (err) {
-        // Sem beacon ninguém descobre a transmissão: desfaz tudo.
-        unwatchExit();
-        unsubscribe();
-        stream.getTracks().forEach(track => track.stop());
-        audio.stop?.();
-        host.toast(`não deu para anunciar a transmissão: ${(err as Error).message}`, "error");
-        return;
+    // Aviso principal: o status do Discord. Não suja o chat e some sozinho
+    // se o Discord fechar. A mensagem no canal fica de reserva para quando o
+    // status não chega a ninguém (compartilhar atividade desligado) ou quando
+    // o usuário pediu as duas coisas.
+    const viaStatus = canAnnounceByStatus()
+        && host.isActivitySharingEnabled() !== false
+        && host.setBroadcastActivity(broadcastActivity(sessionId, channelId, Date.now()));
+    console.info(`[P2PShare] aviso pelo status: ${viaStatus ? "sim" : "não"}`);
+
+    let beaconId: string | undefined;
+    if (!viaStatus || host.alwaysAnnounceInChat()) {
+        try {
+            beaconId = await postBeacon(channelId, sessionId, host.getCurrentUsername());
+        } catch (err) {
+            if (!viaStatus) {
+                // Sem status e sem mensagem ninguém descobre a transmissão: desfaz tudo.
+                unwatchExit();
+                unsubscribe();
+                stream.getTracks().forEach(track => track.stop());
+                audio.stop?.();
+                host.toast(`não deu para anunciar a transmissão: ${(err as Error).message}`, "error");
+                return;
+            }
+            console.warn("[P2PShare] mensagem de reserva falhou; segue só pelo status", err);
+        }
     }
 
     session = {
-        sessionId, channelId, beaconId, stream, peers, unsubscribe, unwatchExit,
+        sessionId, channelId, beaconId, viaStatus, stream, peers, unsubscribe, unwatchExit,
         stopAudio: audio.stop ?? undefined
     };
     // Reaplica a escolha anterior: quem baixou para 720p não quer voltar
@@ -283,10 +302,14 @@ export async function stopBroadcast(): Promise<void> {
     current.stream.getTracks().forEach(track => track.stop());
     current.stopAudio?.();
 
-    try {
-        await removeBeacon(current.channelId, current.beaconId);
-    } catch (err) {
-        console.warn("[P2PShare] não deu para apagar o beacon", err);
+    if (current.viaStatus) host.setBroadcastActivity(null);
+
+    if (current.beaconId) {
+        try {
+            await removeBeacon(current.channelId, current.beaconId);
+        } catch (err) {
+            console.warn("[P2PShare] não deu para apagar o beacon", err);
+        }
     }
 
     notify();
