@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.21.3
+ * @version 1.21.4
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 var __defProp = Object.defineProperty;
@@ -128,7 +128,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.21.3";
+var PLUGIN_VERSION = "1.21.4";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "f78221d17c22d2cdc8c4067a9c27e8791c78f88eda70561258b1b80f235936e5";
@@ -550,6 +550,16 @@ function openRelaySocket(url) {
   ws.onerror = () => {
   };
   return socket;
+}
+var GuildMemberStore = findOptional(byStoreName("GuildMemberStore"));
+function getMemberNick(userId, channelId) {
+  try {
+    const guildId = getChannelGuildId(channelId);
+    if (!guildId) return null;
+    return GuildMemberStore()?.getNick?.(guildId, userId) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // binary.ts
@@ -1736,7 +1746,7 @@ function applyLiveBadges() {
     const nameEl = row.querySelector('[class*="username__"]');
     const text = nameEl?.textContent?.trim();
     const avatar = row.querySelector('[class*="userAvatar"]');
-    const id = (avatar?.style.backgroundImage || "").match(/avatars\/(\d+)\//)?.[1];
+    const id = (avatar?.style.backgroundImage || "").match(/avatars\/(\d+)\//)?.[1] ?? reactUserId(row);
     const live = liveUsers.some((u) => id && u.id === id || !!text && u.names.includes(text));
     const existing = row.querySelector(".p2ps-live-chip");
     if (!live) {
@@ -1776,7 +1786,8 @@ var CHANNEL_ITEM_PREFIX = "channels___";
 var CHANNEL_ITEM = `[data-list-item-id^="${CHANNEL_ITEM_PREFIX}"]`;
 var SIDEBAR_SCOPE = 'nav, [class*="sidebar"], [class*="channelList"], [class*="privateChannels"]';
 function channelIdOf(el) {
-  const raw = el.closest(CHANNEL_ITEM)?.getAttribute("data-list-item-id") ?? "";
+  const item = el.closest(CHANNEL_ITEM) ?? el.closest("li")?.querySelector(CHANNEL_ITEM);
+  const raw = item?.getAttribute("data-list-item-id") ?? "";
   return raw.slice(CHANNEL_ITEM_PREFIX.length) || null;
 }
 function climbToRow(el, scope) {
@@ -1789,6 +1800,16 @@ function climbToRow(el, scope) {
   return node;
 }
 var SIDEBAR_STRATEGIES = [
+  {
+    // Estrutura atual (1.0.9267): os conectados ficam num grupo irmao do
+    // item do canal, no mesmo <li>. Medido ao vivo no Discord do Andrew.
+    name: "channel-li-voiceuser",
+    rows: () => [...document.querySelectorAll(CHANNEL_ITEM)].flatMap((item) => {
+      const li = item.closest("li");
+      if (!li) return [];
+      return [...li.querySelectorAll('[class*="voiceUser"]')].map((el) => ({ el, channelId: channelIdOf(item) }));
+    })
+  },
   {
     // O caso esperado: o Discord pendura os conectados dentro do proprio
     // item do canal, com a mesma classe de linha usada na chamada.
@@ -1825,6 +1846,19 @@ function dedupeRows(rows) {
   }
   return out;
 }
+function reactUserId(row) {
+  try {
+    const key = Object.keys(row).find((k) => k.startsWith("__reactFiber$"));
+    let fiber = key ? row[key] : null;
+    for (let i = 0; fiber && i < 15; i++, fiber = fiber.return) {
+      const p = fiber.memoizedProps;
+      const id = p?.user?.id ?? p?.voiceState?.userId ?? p?.userId;
+      if (typeof id === "string" && /^\d+$/.test(id)) return id;
+    }
+  } catch {
+  }
+  return null;
+}
 function avatarUserId(row) {
   for (const img of row.querySelectorAll("img[src]")) {
     const id = img.getAttribute("src")?.match(/avatars\/(\d+)\//)?.[1];
@@ -1843,7 +1877,7 @@ function nameTextsOf(row) {
   return whole ? [whole] : [];
 }
 function liveUserOf(row) {
-  const id = avatarUserId(row);
+  const id = avatarUserId(row) ?? reactUserId(row);
   if (id) {
     const byId = liveUsers.find((u) => u.id === id);
     if (byId) return byId;
@@ -4033,6 +4067,7 @@ var P2PShare = class {
   cleanupVoiceBtn = null;
   cleanupBeacons = null;
   cleanupVoice = null;
+  cleanupBeaconSound = null;
   /** Relógio de espera pelo login; parar o plugin antes disso o cancela. */
   readyTimer = null;
   /**
@@ -4095,7 +4130,13 @@ var P2PShare = class {
       for (const b of getActiveBeacons()) {
         users.push({
           id: b.broadcasterId,
-          names: [getUsername(b.broadcasterId), b.broadcasterName],
+          // A lista mostra o apelido no servidor; o id resolve quase
+          // sempre, o nome fica de reserva para quando não resolve.
+          names: [
+            getUsername(b.broadcasterId),
+            b.broadcasterName,
+            ...[getMemberNick(b.broadcasterId, b.channelId)].filter((n) => !!n)
+          ],
           // Já assistindo: o selo vira informativo, sem ação repetida.
           onWatch: isWatching(b.sessionId) ? void 0 : () => {
             if (beaconIsHere(b)) ui_exports.focusChannel(b.channelId);
@@ -4106,7 +4147,29 @@ var P2PShare = class {
       ui_exports.setLiveUsers(users);
     };
     this.cleanupBeacons = onBeaconsChange(refreshLive);
-    this.cleanupVoice = onVoiceChannelChange(() => refreshLive());
+    const announced = /* @__PURE__ */ new Set();
+    let primed = false;
+    const syncSounds = () => {
+      const here = new Set(getActiveBeacons().filter(beaconIsHere).map((b) => b.sessionId));
+      for (const sessionId of here) {
+        if (announced.has(sessionId)) continue;
+        announced.add(sessionId);
+        if (primed) playStreamStarted();
+      }
+      for (const sessionId of [...announced]) {
+        if (here.has(sessionId)) continue;
+        announced.delete(sessionId);
+        if (primed) playStreamStopped();
+      }
+      primed = true;
+    };
+    this.cleanupBeaconSound = onBeaconsChange(syncSounds);
+    syncSounds();
+    this.cleanupVoice = onVoiceChannelChange(() => {
+      primed = false;
+      syncSounds();
+      refreshLive();
+    });
     let { viewers, active } = getBroadcastState();
     this.cleanupState = onBroadcastStateChange((state) => {
       ui_exports.updateLauncher(state);
@@ -4136,6 +4199,8 @@ var P2PShare = class {
     this.cleanupBeacons = null;
     this.cleanupVoice?.();
     this.cleanupVoice = null;
+    this.cleanupBeaconSound?.();
+    this.cleanupBeaconSound = null;
     this.cleanupVoiceBtn?.();
     this.cleanupVoiceBtn = null;
     this.cleanupUpdater?.();
