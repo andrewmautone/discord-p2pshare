@@ -7,6 +7,11 @@ release/*
 !release/P2PShare.plugin.js
 # Só o número da versão: a checagem frequente do auto-update lê este.
 !release/VERSION
+# Assinatura do plugin: o auto-update baixa junto e confere antes de gravar.
+!release/P2PShare.plugin.js.sig
+
+# Chave privada de assinatura: fica fora do repo, isto é só uma rede de proteção.
+*.pem
 
 # Artefatos do Rust
 native/audio-helper/target/

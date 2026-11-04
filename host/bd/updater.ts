@@ -5,8 +5,8 @@
  */
 
 import { isBroadcasting } from "../../broadcast";
-import { PLUGIN_VERSION, UPDATE_URL, VERSION_URL } from "../../constants";
-import { isNewer, looksLikePlugin, parseMetaVersion, parseVersionFile } from "../../updater";
+import { PLUGIN_VERSION, SIGNATURE_URL, UPDATE_PUBLIC_KEY, UPDATE_URL, VERSION_URL } from "../../constants";
+import { isNewer, parseVersionFile, vetUpdate } from "../../updater";
 import { watchingCount } from "../../watch";
 import { loadSetting } from "./settings";
 
@@ -182,13 +182,19 @@ export async function checkForUpdate(): Promise<void> {
     const source = await fetchText(UPDATE_URL);
     if (!source) return;
 
-    if (!looksLikePlugin(source, PLUGIN_NAME)) {
-        console.warn("[P2PShare] updater: resposta não parece o plugin, ignorando");
+    const signature = await fetchText(SIGNATURE_URL);
+
+    const remote = await vetUpdate({
+        source,
+        signature,
+        publicKey: UPDATE_PUBLIC_KEY,
+        pluginName: PLUGIN_NAME,
+        currentVersion: PLUGIN_VERSION
+    });
+    if (!remote) {
+        console.warn("[P2PShare] updater: atualização recusada (não é mais nova, não parece o plugin ou a assinatura não confere)");
         return;
     }
-
-    const remote = parseMetaVersion(source);
-    if (!remote || !isNewer(remote, PLUGIN_VERSION)) return;
 
     // Entre baixar e gravar passou um await; a sessão pode ter começado.
     if (isBusy()) {

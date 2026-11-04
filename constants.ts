@@ -54,6 +54,17 @@ export const HELPER_SHA256 = "__HELPER_SHA256__";
 export const UPDATE_URL =
     "https://raw.githubusercontent.com/andrewmautone/discord-p2pshare/main/release/P2PShare.plugin.js";
 
+/** Assinatura do plugin, gerada pelo build e publicada no mesmo commit. */
+export const SIGNATURE_URL = `${UPDATE_URL}.sig`;
+
+/**
+ * Chave pública que confere as atualizações, embutida pelo build a partir de
+ * `scripts/update-signing.pub`.
+ *
+ * Sem ela o build falha e, se o marcador sobrar, o updater recusa tudo.
+ */
+export const UPDATE_PUBLIC_KEY = "__UPDATE_PUBLIC_KEY__";
+
 /**
  * Só o número da versão publicada (gerado pelo build ao lado do plugin).
  *

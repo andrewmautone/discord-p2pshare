@@ -156,6 +156,13 @@ Para publicar uma versão: suba `PLUGIN_VERSION` em `constants.ts`, rode o build
 faça o push e crie a release. O número da versão vem daí para o cabeçalho do
 plugin e para o instalador, e é ele que o auto-update compara.
 
+O auto-update só aceita plugin assinado. O build assina sozinho e falha sem o par
+de chaves. Gere o par uma vez, na máquina que faz o build, com
+`node scripts/signing.mjs keygen`, e comite `scripts/update-signing.pub`. A chave
+privada fica em `~/.p2pshare/update-signing-key.pem` (ou em
+`P2PSHARE_SIGNING_KEY`) e nunca vai para o git. Guarde uma cópia em lugar seguro:
+sem ela, quem já instalou só recebe versão nova reinstalando.
+
 ---
 
 ## Licença
