@@ -11,9 +11,16 @@ import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
 
+import { defaultKeyPaths, loadSigningKeys, signSource } from "./signing.mjs";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = resolve(root, "release");
 const outFile = resolve(outDir, "P2PShare.plugin.js");
+
+// Antes de tudo: sem o par de chaves não existe release. Um plugin sem chave
+// embutida recusaria toda atualização e ficaria preso nesta versão.
+const { publicKeyPath, privateKeyPath } = defaultKeyPaths(root);
+const { publicKey, privateKeyPem } = await loadSigningKeys(publicKeyPath, privateKeyPath);
 
 // Fonte única da versão: constants.ts. Duas cópias divergiriam, e o updater
 // compara justamente esse número.
@@ -97,7 +104,13 @@ if (process.env.P2PSHARE_HELPER_LOCAL === "1") {
 // Prefixa o cabeçalho que o BetterDiscord lê para nome, autor e versão.
 let bundled = await readFile(outFile, "utf8");
 bundled = bundled.replace("__HELPER_SHA256__", helperHash);
-await writeFile(outFile, META + bundled, "utf8");
+bundled = bundled.replace("__UPDATE_PUBLIC_KEY__", publicKey);
+const pluginSource = META + bundled;
+await writeFile(outFile, pluginSource, "utf8");
+
+// Assina o texto final, cabeçalho incluído: é o que o updater baixa e confere.
+// Vai para o git no mesmo commit do plugin.
+await writeFile(`${outFile}.sig`, `${signSource(pluginSource, privateKeyPem)}\n`, "utf8");
 
 // Só o número da versão: é o que a atualização automática checa a cada
 // poucos minutos (VERSION_URL), em vez de baixar o plugin inteiro. Vai para o

@@ -1,0 +1,4 @@
+# A assinatura cobre os bytes exatos do plugin. Sem isto, o git no Windows pode
+# converter as quebras de linha ao comitar e invalidar a assinatura publicada.
+release/P2PShare.plugin.js -text
+release/P2PShare.plugin.js.sig -text

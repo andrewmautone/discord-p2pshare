@@ -77,3 +77,68 @@ export function looksLikePlugin(source: string, expectedName: string): boolean {
 
     return parseMetaVersion(source) !== null;
 }
+
+function fromBase64(text: string): Uint8Array {
+    return Uint8Array.from(atob(text), char => char.charCodeAt(0));
+}
+
+/**
+ * O plugin baixado foi assinado pela chave privada do projeto?
+ *
+ * `looksLikePlugin` só separa plugin de página de erro; quem pode escrever no
+ * repo passaria por ele. A assinatura cobre exatamente os bytes publicados.
+ *
+ * Qualquer falha responde false, inclusive chave ainda não embutida no build:
+ * na dúvida, não sobrescrever.
+ */
+export async function verifyPluginSignature(
+    source: string,
+    signature: string,
+    publicKey: string
+): Promise<boolean> {
+    try {
+        const key = await crypto.subtle.importKey(
+            "spki",
+            fromBase64(publicKey) as BufferSource,
+            { name: "ECDSA", namedCurve: "P-256" },
+            false,
+            ["verify"]
+        );
+
+        return await crypto.subtle.verify(
+            { name: "ECDSA", hash: "SHA-256" },
+            key,
+            fromBase64(signature.trim()) as BufferSource,
+            new TextEncoder().encode(source) as BufferSource
+        );
+    } catch {
+        return false;
+    }
+}
+
+export type UpdateCandidate = {
+    source: string;
+    signature: string | null;
+    publicKey: string;
+    pluginName: string;
+    currentVersion: string;
+};
+
+/**
+ * Decide se o que foi baixado pode substituir o plugin.
+ *
+ * Devolve a versão nova ou null. Fica aqui, e não no host, para a decisão de
+ * sobrescrever ser testada sem tocar em disco nem no BetterDiscord.
+ */
+export async function vetUpdate(candidate: UpdateCandidate): Promise<string | null> {
+    const { source, signature, publicKey, pluginName, currentVersion } = candidate;
+
+    if (!looksLikePlugin(source, pluginName)) return null;
+
+    const remote = parseMetaVersion(source);
+    if (!remote || !isNewer(remote, currentVersion)) return null;
+
+    if (signature === null) return null;
+
+    return await verifyPluginSignature(source, signature, publicKey) ? remote : null;
+}
