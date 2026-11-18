@@ -6,6 +6,7 @@
 
 import { computePerPeerBitrate, smoothBudgetMbps, usableBudgetMbps } from "./bitrate";
 import type { HandshakeKind } from "./codec";
+import { applyCodecPreference, codecsToDropForEncode, stripCodecsFromSdp } from "./videoCodec";
 import {
     ICE_GATHER_TIMEOUT_MS,
     ICE_SERVERS,
@@ -186,7 +187,17 @@ export class BroadcastPeers {
             }
         };
 
-        await pc.setRemoteDescription({ type: "offer", sdp } as RTCSessionDescriptionInit);
+        // Codec: tira da offer o que esta maquina nao codifica em hardware.
+        // So' filtrar a resposta nao basta (ver stripCodecsFromSdp).
+        let offerSdp = sdp;
+        try {
+            offerSdp = stripCodecsFromSdp(sdp, await codecsToDropForEncode());
+        } catch (err) {
+            console.warn("[P2PShare] filtro de codec ignorado", err);
+        }
+
+        await pc.setRemoteDescription({ type: "offer", sdp: offerSdp } as RTCSessionDescriptionInit);
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         await waitForIceGathering(pc);
@@ -279,7 +290,8 @@ export class ViewerPeer {
         this.pc = pc;
 
         // recvonly: o viewer não manda mídia nenhuma.
-        pc.addTransceiver("video", { direction: "recvonly" });
+        const videoT = pc.addTransceiver("video", { direction: "recvonly" });
+        await applyCodecPreference(videoT, "decode");
         pc.addTransceiver("audio", { direction: "recvonly" });
 
         pc.ontrack = event => {
