@@ -6,6 +6,7 @@
 
 import { computePerPeerBitrate, smoothBudgetMbps, usableBudgetMbps } from "./bitrate";
 import type { HandshakeKind } from "./codec";
+import { enhanceOpusSdp } from "./audioOpus";
 import { applyCodecPreference, codecsToDropForEncode, stripCodecsFromSdp } from "./videoCodec";
 import {
     ICE_GATHER_TIMEOUT_MS,
@@ -191,7 +192,7 @@ export class BroadcastPeers {
         // So' filtrar a resposta nao basta (ver stripCodecsFromSdp).
         let offerSdp = sdp;
         try {
-            offerSdp = stripCodecsFromSdp(sdp, await codecsToDropForEncode());
+            offerSdp = enhanceOpusSdp(stripCodecsFromSdp(sdp, await codecsToDropForEncode()));
         } catch (err) {
             console.warn("[P2PShare] filtro de codec ignorado", err);
         }
@@ -250,7 +251,9 @@ export class BroadcastPeers {
 
         for (const pc of this.peers.values()) {
             for (const sender of pc.getSenders()) {
-                if (!sender.track) continue;
+                // So o video. O audio no mesmo laco ganhava o maxBitrate do video
+                // (ate 8 Mb/s) e o Opus subia para ~500 kb/s.
+                if (!sender.track || sender.track.kind !== "video") continue;
 
                 const params = sender.getParameters();
                 if (!params.encodings?.length) params.encodings = [{}];
@@ -345,6 +348,8 @@ export class ViewerPeer {
         );
 
         const offer = await pc.createOffer();
+        // Audio estereo a 128 kb/s (ver audioOpus.ts); o emissor tambem reescreve.
+        if (offer.sdp) offer.sdp = enhanceOpusSdp(offer.sdp);
         await pc.setLocalDescription(offer);
         await waitForIceGathering(pc);
 

@@ -2,7 +2,7 @@
  * @name P2PShare
  * @author Andrew
  * @description Compartilhamento de tela ponto-a-ponto via WebRTC, sem passar pela infra de video do Discord e sem servidor proprio.
- * @version 1.21.4
+ * @version 1.21.5
  * @source https://github.com/andrewmautone/discord-p2pshare
  */
 var __defProp = Object.defineProperty;
@@ -128,7 +128,7 @@ async function captureScreen(deps = {}, opts = {}) {
 
 // constants.ts
 var PROTOCOL_VERSION = 1;
-var PLUGIN_VERSION = "1.21.4";
+var PLUGIN_VERSION = "1.21.5";
 var HELPER_TAG = "audio-v2";
 var HELPER_URL = `https://github.com/andrewmautone/discord-p2pshare/releases/download/${HELPER_TAG}/p2pshare-audio.exe`;
 var HELPER_SHA256 = "f78221d17c22d2cdc8c4067a9c27e8791c78f88eda70561258b1b80f235936e5";
@@ -359,19 +359,19 @@ function readCachedMessages(channelId, limit) {
   try {
     const store = MessageStore();
     if (!store) return [];
-    const cache = store.getMessages(channelId);
-    if (!cache || cache.ready === false) return [];
-    const list = toArray(cache).slice(-limit).reverse();
+    const cache2 = store.getMessages(channelId);
+    if (!cache2 || cache2.ready === false) return [];
+    const list = toArray(cache2).slice(-limit).reverse();
     return normalizeMessages(list, channelId, limit);
   } catch (err) {
     console.warn("[P2PShare] cache de mensagens indispon\xEDvel", err);
     return [];
   }
 }
-function toArray(cache) {
-  if (Array.isArray(cache)) return cache;
-  if (typeof cache.toArray === "function") return cache.toArray() ?? [];
-  if (Array.isArray(cache._array)) return cache._array;
+function toArray(cache2) {
+  if (Array.isArray(cache2)) return cache2;
+  if (typeof cache2.toArray === "function") return cache2.toArray() ?? [];
+  if (Array.isArray(cache2._array)) return cache2._array;
   return [];
 }
 function normalizeMessages(raw, channelId, limit) {
@@ -2575,6 +2575,189 @@ var host = {
   setLiveUsers
 };
 
+// audioOpus.ts
+var OPUS_MAX_AVERAGE_BITRATE = 128e3;
+var WANTED = [
+  ["stereo", "1"],
+  ["sprop-stereo", "1"],
+  ["maxaveragebitrate", String(OPUS_MAX_AVERAGE_BITRATE)]
+];
+function enhanceOpusSdp(sdp) {
+  try {
+    const eol = sdp.includes("\r\n") ? "\r\n" : "\n";
+    const lines = sdp.split(eol);
+    const opusPts = /* @__PURE__ */ new Set();
+    for (const l of lines) {
+      const m = /^a=rtpmap:(\d+) opus\//i.exec(l);
+      if (m) opusPts.add(m[1]);
+    }
+    if (!opusPts.size) return sdp;
+    const seen = /* @__PURE__ */ new Set();
+    const out = lines.map((l) => {
+      const m = /^a=fmtp:(\d+) (.*)$/.exec(l);
+      if (!m || !opusPts.has(m[1])) return l;
+      seen.add(m[1]);
+      const params = m[2].split(";").filter(Boolean);
+      const have = new Set(params.map((p) => p.split("=")[0].trim()));
+      for (const [k, v] of WANTED) {
+        if (!have.has(k)) params.push(`${k}=${v}`);
+      }
+      return `a=fmtp:${m[1]} ${params.join(";")}`;
+    });
+    const final = [];
+    for (const l of out) {
+      final.push(l);
+      const m = /^a=rtpmap:(\d+) opus\//i.exec(l);
+      if (m && !seen.has(m[1])) {
+        final.push(`a=fmtp:${m[1]} ${WANTED.map(([k, v]) => `${k}=${v}`).join(";")}`);
+      }
+    }
+    return final.join(eol);
+  } catch {
+    return sdp;
+  }
+}
+
+// videoCodec.ts
+var CODEC_PREFERENCE = ["AV1", "H265", "H264", "VP8"];
+var HARDWARE_ONLY = /* @__PURE__ */ new Set(["AV1", "H265"]);
+function nameOf(mimeType) {
+  const sub = mimeType.toLowerCase().replace(/^video\//, "");
+  switch (sub) {
+    case "av1":
+      return "AV1";
+    case "h265":
+    case "hevc":
+      return "H265";
+    case "h264":
+      return "H264";
+    case "vp8":
+      return "VP8";
+    default:
+      return null;
+  }
+}
+function orderVideoCodecs(codecs, hardware) {
+  const rank = (c) => {
+    const name = nameOf(c.mimeType);
+    return name === null ? -1 : CODEC_PREFERENCE.indexOf(name);
+  };
+  const usable = codecs.filter((c) => {
+    const name = nameOf(c.mimeType);
+    if (name === null) return false;
+    return !HARDWARE_ONLY.has(name) || hardware[name] === true;
+  }).sort((a, b) => rank(a) - rank(b));
+  if (!usable.length) return [...codecs];
+  const aux = codecs.filter((c) => /\/(rtx|red|ulpfec|flexfec-03)$/i.test(c.mimeType));
+  return [...usable, ...aux];
+}
+function stripCodecsFromSdp(sdp, drop) {
+  if (!drop.size) return sdp;
+  const eol = sdp.includes("\r\n") ? "\r\n" : "\n";
+  const lines = sdp.split(eol);
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!lines[i].startsWith("m=video")) {
+      out.push(lines[i++]);
+      continue;
+    }
+    let j = i + 1;
+    while (j < lines.length && !lines[j].startsWith("m=")) j++;
+    const section = lines.slice(i, j);
+    const byPt = /* @__PURE__ */ new Map();
+    for (const l of section) {
+      const m = /^a=rtpmap:(\d+) ([^/\s]+)/.exec(l);
+      if (m) byPt.set(m[1], m[2]);
+    }
+    const dropPts = /* @__PURE__ */ new Set();
+    for (const [pt, codec] of byPt) {
+      const name = nameOf("video/" + codec);
+      if (name && drop.has(name)) dropPts.add(pt);
+    }
+    for (const l of section) {
+      const m = /^a=fmtp:(\d+) .*apt=(\d+)/.exec(l);
+      if (m && dropPts.has(m[2])) dropPts.add(m[1]);
+    }
+    const header = section[0].split(" ");
+    const pts = header.slice(3);
+    const kept = pts.filter((pt) => !dropPts.has(pt));
+    const hasRealCodec = kept.some((pt) => {
+      const n = nameOf("video/" + (byPt.get(pt) ?? ""));
+      return n !== null;
+    });
+    if (!dropPts.size || !hasRealCodec) {
+      out.push(...section);
+    } else {
+      out.push([...header.slice(0, 3), ...kept].join(" "));
+      for (const l of section.slice(1)) {
+        const m = /^a=(?:rtpmap|fmtp|rtcp-fb):(\d+) /.exec(l);
+        if (m && dropPts.has(m[1])) continue;
+        out.push(l);
+      }
+    }
+    i = j;
+  }
+  return out.join(eol);
+}
+async function codecsToDropForEncode() {
+  const hw = await detectHardwareCodecs("encode");
+  const drop = /* @__PURE__ */ new Set();
+  for (const name of ["AV1", "H265"]) if (!hw[name]) drop.add(name);
+  return drop;
+}
+var PROBE = {
+  AV1: { contentType: "video/AV1" },
+  H265: { contentType: "video/H265" },
+  H264: { contentType: "video/H264;profile-level-id=42e01f" },
+  VP8: { contentType: "video/VP8" }
+};
+var cache = /* @__PURE__ */ new Map();
+function detectHardwareCodecs(direction) {
+  let hit = cache.get(direction);
+  if (!hit) {
+    hit = probe(direction).catch(() => ({}));
+    cache.set(direction, hit);
+  }
+  return hit;
+}
+async function probe(direction) {
+  const mc = globalThis.navigator?.mediaCapabilities;
+  if (!mc) return {};
+  const out = {};
+  for (const name of ["AV1", "H265", "H264"]) {
+    try {
+      const cfg = {
+        type: "webrtc",
+        video: {
+          contentType: PROBE[name].contentType,
+          width: 1920,
+          height: 1080,
+          framerate: 60,
+          bitrate: 8e6
+        }
+      };
+      const info = direction === "encode" ? await mc.encodingInfo(cfg) : await mc.decodingInfo(cfg);
+      out[name] = !!(info.supported && info.powerEfficient);
+    } catch {
+      out[name] = false;
+    }
+  }
+  return out;
+}
+async function applyCodecPreference(transceiver, direction) {
+  try {
+    const RTR = globalThis.RTCRtpSender;
+    const RTRecv = globalThis.RTCRtpReceiver;
+    const caps = (direction === "encode" ? RTR : RTRecv)?.getCapabilities?.("video");
+    if (!caps?.codecs || !transceiver?.setCodecPreferences) return;
+    const hw = await detectHardwareCodecs(direction);
+    transceiver.setCodecPreferences(orderVideoCodecs(caps.codecs, hw));
+  } catch (err) {
+    console.warn("[P2PShare] prefer\xEAncia de codec ignorada", err);
+  }
+}
+
 // peers.ts
 var defaultFactory = (config) => new RTCPeerConnection(config);
 var PEER_CONFIG = { iceServers: ICE_SERVERS };
@@ -2689,7 +2872,13 @@ var BroadcastPeers = class {
         this.removePeer(fromUserId);
       }
     };
-    await pc.setRemoteDescription({ type: "offer", sdp });
+    let offerSdp = sdp;
+    try {
+      offerSdp = enhanceOpusSdp(stripCodecsFromSdp(sdp, await codecsToDropForEncode()));
+    } catch (err) {
+      console.warn("[P2PShare] filtro de codec ignorado", err);
+    }
+    await pc.setRemoteDescription({ type: "offer", sdp: offerSdp });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     await waitForIceGathering(pc);
@@ -2728,7 +2917,7 @@ var BroadcastPeers = class {
     this.onBitrateChange?.(maxBitrate, budget, this.auto && this.measuredMbps !== null);
     for (const pc of this.peers.values()) {
       for (const sender of pc.getSenders()) {
-        if (!sender.track) continue;
+        if (!sender.track || sender.track.kind !== "video") continue;
         const params = sender.getParameters();
         if (!params.encodings?.length) params.encodings = [{}];
         params.encodings[0].maxBitrate = maxBitrate;
@@ -2754,7 +2943,8 @@ var ViewerPeer = class {
   async start() {
     const pc = (this.opts.createPeer ?? defaultFactory)(PEER_CONFIG);
     this.pc = pc;
-    pc.addTransceiver("video", { direction: "recvonly" });
+    const videoT = pc.addTransceiver("video", { direction: "recvonly" });
+    await applyCodecPreference(videoT, "decode");
     pc.addTransceiver("audio", { direction: "recvonly" });
     pc.ontrack = (event) => {
       const stream = event.streams[0];
@@ -2787,6 +2977,7 @@ var ViewerPeer = class {
       PEER_CONNECT_TIMEOUT_MS
     );
     const offer2 = await pc.createOffer();
+    if (offer2.sdp) offer2.sdp = enhanceOpusSdp(offer2.sdp);
     await pc.setLocalDescription(offer2);
     await waitForIceGathering(pc);
     await this.transport.send("offer", this.broadcasterId, pc.localDescription?.sdp ?? offer2.sdp);
